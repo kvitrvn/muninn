@@ -28,7 +28,7 @@ func (c *Client) FetchSchema(ctx context.Context) ([]FieldInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("boamp: build schema request: %w", err)
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.ods.HTTP.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("boamp: schema request failed: %w", err)
 	}

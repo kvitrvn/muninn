@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"github.com/kvitrvn/muninn"
+	"github.com/kvitrvn/muninn/beauamp"
 	"github.com/kvitrvn/muninn/boamp"
+	"github.com/kvitrvn/muninn/consolidate"
+	"github.com/kvitrvn/muninn/decp"
 )
 
 // defaultKeywords is the broad list of "document management" synonyms (GED and
@@ -26,16 +29,15 @@ var defaultKeywords = []string{
 
 func main() {
 	// Usage:
-	//   go run ./cmd/example [-limit N] [-all] [-fulltext] [keyword ...]
+	//   go run ./cmd/example [-source S] [-limit N] [-all] [keyword ...]
 	// Examples:
-	//   go run ./cmd/example                              # default GED list, title, OR
-	//   go run ./cmd/example GED "gestion documentaire"   # OR in the title
+	//   go run ./cmd/example                                 # all sources, default GED list, OR
+	//   go run ./cmd/example -source decp GED                # awarded contracts (amounts, winners)
+	//   go run ./cmd/example -source beauamp "gestion documentaire"
 	//   go run ./cmd/example -all "intelligence artificielle" "données personnelles"
-	//                                                     # intersection (AND) in the title
-	//   go run ./cmd/example -fulltext RGPD               # full-text over all fields
+	source := flag.String("source", "all", "data source: all (BEAUAMP+DECP consolidated), beauamp, decp, or boamp")
 	limit := flag.Int("limit", 300, "max number of records to fetch (Search); Count always returns the real total")
 	matchAll := flag.Bool("all", false, "require ALL keywords (AND) instead of at least one (OR, default)")
-	fulltext := flag.Bool("fulltext", false, "search full-text over the whole notice instead of the title only (objet, default)")
 	flag.Parse()
 
 	keywords := flag.Args()
@@ -46,15 +48,13 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	client := boamp.New()
+	provider, counter := build(*source)
 
-	// By default we target the title (objet) and combine with OR. -fulltext and
-	// -all flip each axis respectively.
-	// Limit bounds ONLY the paginated fetch (Search); Count ignores Limit and
-	// always returns the real total.
+	// Target the title (objet) and combine with OR by default; -all switches to
+	// AND. Limit bounds ONLY the paginated fetch (Search).
 	q := muninn.Query{
 		Keywords:  keywords,
-		ObjetOnly: !*fulltext,
+		ObjetOnly: true,
 		MatchAll:  *matchAll,
 		Limit:     *limit,
 	}
@@ -63,41 +63,78 @@ func main() {
 	if q.MatchAll {
 		mode = "AND"
 	}
-	field := "title (objet)"
-	if !q.ObjetOnly {
-		field = "full-text (all fields)"
-	}
-	fmt.Printf("Search: %s / %s\n", mode, field)
+	fmt.Printf("Source: %s / mode: %s\n", provider.Name(), mode)
 
-	// 1. Estimate: how many tenders in total (open or closed)?
-	//    A single request, not capped by the pagination window.
-	total, err := client.Count(ctx, q)
-	if err != nil {
-		log.Fatalf("BOAMP count: %v", err)
+	// 1. Estimate: how many tenders match (a single request per source).
+	if counter != nil {
+		total, err := counter.Count(ctx, q)
+		if err != nil {
+			log.Fatalf("count: %v", err)
+		}
+		fmt.Printf("Estimate: %d tenders for %d keyword(s): %v\n", total, len(keywords), keywords)
 	}
-	fmt.Printf("Estimate: %d public tenders for %d keyword(s): %v\n",
-		total, len(keywords), keywords)
 
-	// 2. Paginated fetch of the records. Search retrieves everything up to the
-	//    API cap (10,000); beyond that it returns an *ErrTruncated that can be
-	//    treated as a warning, the fetched data remaining valid.
-	results, err := client.Search(ctx, q)
-	var truncated *boamp.ErrTruncated
+	// 2. Fetch the records. Beyond the source's pagination window / the limit,
+	//    Search returns a *muninn.ErrTruncated that is treated as a warning.
+	results, err := provider.Search(ctx, q)
+	var truncated *muninn.ErrTruncated
 	switch {
 	case errors.As(err, &truncated):
-		fmt.Printf("⚠ %d records retrieved out of %d (API cap reached)\n",
-			truncated.Retrieved, truncated.Total)
+		fmt.Printf("⚠ %d records retrieved out of ~%d (cap reached)\n", truncated.Retrieved, truncated.Total)
 	case err != nil:
-		log.Fatalf("BOAMP search: %v", err)
+		log.Fatalf("search: %v", err)
 	default:
-		fmt.Printf("%d records retrieved (complete set)\n", len(results))
+		fmt.Printf("%d records retrieved\n", len(results))
 	}
 
-	// Preview of the first 10.
+	// Preview of the first 10, with the award depth when available.
 	for i, t := range results {
 		if i >= 10 {
 			break
 		}
-		fmt.Printf("  [%s] %s — %s\n", t.SourceID, t.Titre, t.Buyer.Nom)
+		fmt.Printf("  [%s] %s\n", t.Source, t.Objet)
+		fmt.Printf("      %s", orDash(t.Buyer.Nom, t.Buyer.SIREN9()))
+		if t.Supplier.SIREN9() != "" || t.Supplier.Nom != "" {
+			fmt.Printf(" → %s", orDash(t.Supplier.Nom, t.Supplier.SIREN9()))
+		}
+		if t.MontantEstime > 0 {
+			fmt.Printf(" (%.0f €)", t.MontantEstime)
+		}
+		fmt.Println()
+	}
+}
+
+// counter is implemented by providers that expose a cheap Count.
+type counter interface {
+	Count(context.Context, muninn.Query) (int, error)
+}
+
+// build wires the requested provider, and a Count-capable handle when the source
+// supports it (the consolidator does not).
+func build(source string) (muninn.Provider, counter) {
+	switch source {
+	case "beauamp":
+		c := beauamp.New()
+		return c, c
+	case "decp":
+		c := decp.New()
+		return c, c
+	case "boamp":
+		c := boamp.New()
+		return c, c
+	default: // "all"
+		return consolidate.New(beauamp.New(), decp.New()), nil
+	}
+}
+
+// orDash returns the name, falling back to the SIREN, or "—" when both are empty.
+func orDash(name, siren string) string {
+	switch {
+	case name != "":
+		return name
+	case siren != "":
+		return siren
+	default:
+		return "—"
 	}
 }

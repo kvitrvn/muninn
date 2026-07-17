@@ -1,6 +1,9 @@
 package muninn
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // ProcedureType is the award procedure type, independent of the engagement
 // type (see EngagementType).
@@ -71,13 +74,29 @@ const (
 	AvisRectificatif
 )
 
-// Buyer represents the public buyer.
+// Buyer represents an economic actor of a tender: either the public buyer or,
+// when used as Tender.Supplier, the awarded contractor (titulaire).
 type Buyer struct {
 	Nom             string
 	SIRET           string
 	SIREN           string
 	Ville           string
 	CodeDepartement string
+}
+
+// SIREN9 returns the 9-digit SIREN identifying the legal entity, derived from
+// SIREN when set, otherwise from the first 9 digits of SIRET (a SIRET is a
+// SIREN plus a 5-digit establishment number). It returns "" when neither yields
+// a plausible SIREN. This is the stable key used to relate an actor across
+// sources (a buyer or a supplier keeps its SIREN, its SIRET may vary per site).
+func (b Buyer) SIREN9() string {
+	if len(b.SIREN) >= 9 {
+		return b.SIREN[:9]
+	}
+	if len(b.SIRET) >= 9 {
+		return b.SIRET[:9]
+	}
+	return ""
 }
 
 // Tender is the normalized representation of a public procurement notice,
@@ -94,6 +113,11 @@ type Tender struct {
 	CPVCodes []string
 	Buyer    Buyer
 
+	// Supplier is the awarded contractor (titulaire) when the notice is an award
+	// result. Its zero value means the contract is not yet awarded or the winner
+	// is unknown for this source (notices from the tendering phase have none).
+	Supplier Buyer
+
 	AvisType   AvisType
 	Procedure  ProcedureType
 	Engagement EngagementType
@@ -101,7 +125,11 @@ type Tender struct {
 	DatePublication   time.Time
 	DateLimiteReponse time.Time
 
-	MontantEstime float64 // 0 if not disclosed
+	// MontantEstime is the contract amount in euros, 0 when not disclosed. Its
+	// authority depends on the source: DECP reports the legally binding awarded
+	// amount, BEAUAMP an indicative consolidated value, BOAMP rarely any. When
+	// consolidating several sources, prefer the DECP value.
+	MontantEstime float64
 
 	URL string
 
@@ -110,12 +138,43 @@ type Tender struct {
 	RawFields map[string]any
 }
 
-// DedupKey returns a stable key to relate two notices that may concern the same
-// contract (e.g. an initial BOAMP notice and its award result from another
-// source). Useful to deduplicate a multi-provider aggregation.
+// DedupKey returns a stable key relating two notices that likely concern the
+// same contract across sources (e.g. a BEAUAMP notice and its DECP award). It
+// keys on the buyer SIREN plus the primary CPV code — both provided by BEAUAMP
+// and DECP — which is robust to per-site SIRET and title-wording differences.
+// It falls back to buyer SIRET + title, then to source + native ID when no
+// stronger key is available.
 func (t Tender) DedupKey() string {
+	if siren := t.Buyer.SIREN9(); siren != "" && len(t.CPVCodes) > 0 {
+		return siren + "|" + cpvRoot(t.CPVCodes[0])
+	}
 	if t.Buyer.SIRET != "" && t.Titre != "" {
 		return t.Buyer.SIRET + "|" + t.Titre
 	}
 	return t.Source + "|" + t.SourceID
+}
+
+// cpvRoot normalizes a CPV code to its 8-digit root, dropping the optional
+// "-N" check digit. Sources disagree on the suffix (DECP "79953000-9" vs
+// BEAUAMP "79953000"), so the root is what makes them comparable.
+func cpvRoot(cpv string) string {
+	if i := len(cpv); i > 8 {
+		return cpv[:8]
+	}
+	return cpv
+}
+
+// ErrTruncated signals that a paginated Search could not fetch every matching
+// record — the total exceeded the source's pagination window or the requested
+// Query.Limit. Retrieved is how many records were actually returned, Total the
+// real number of matches. It is returned alongside the fetched subset, so a
+// caller may treat it as a warning (via errors.As) and still use the records.
+type ErrTruncated struct {
+	Retrieved int
+	Total     int
+}
+
+func (e *ErrTruncated) Error() string {
+	return fmt.Sprintf("muninn: truncated results: %d retrieved out of %d",
+		e.Retrieved, e.Total)
 }

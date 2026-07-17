@@ -40,7 +40,13 @@ jobs:
         with:
           go-version: "1.26"
           cache: true
+      # The prebuilt golangci-lint binaries are compiled with an older Go and
+      # refuse a module targeting go 1.26. Build it from source with the Go
+      # toolchain installed above; GOTOOLCHAIN=local forces that toolchain
+      # instead of golangci-lint's own (older) toolchain directive.
+      - name: Install golangci-lint
+        env:
+          GOTOOLCHAIN: local
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
+        run: $(go env GOPATH)/bin/golangci-lint run ./...

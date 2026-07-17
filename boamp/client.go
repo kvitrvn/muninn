@@ -19,57 +19,50 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kvitrvn/muninn"
+	"github.com/kvitrvn/muninn/internal/ods"
 )
 
 const defaultBaseURL = "https://boamp-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/boamp/records"
 
-// Opendatasoft Explore API v2.1 constraints (verified live):
-//   - maxPageSize: limit is capped at 100 per request.
-//   - maxOffsetWindow: offset+limit must stay <= 10000. Beyond that, the
-//     /exports endpoint is required (out of scope for now).
-const (
-	maxPageSize     = 100
-	maxOffsetWindow = 10000
-)
-
-// Client queries the BOAMP API.
+// Client queries the BOAMP API. The Opendatasoft pagination and request
+// plumbing lives in internal/ods; this package supplies the base URL, the
+// where-clause field names, and the record mapping.
 type Client struct {
-	baseURL string
-	http    *http.Client
+	ods *ods.Client
 }
 
 // Option configures a Client.
-type Option func(*Client)
+type Option func(*ods.Client)
 
 // WithHTTPClient injects a custom *http.Client (timeouts, instrumented
 // transport, proxy...).
 func WithHTTPClient(h *http.Client) Option {
-	return func(c *Client) { c.http = h }
+	return func(c *ods.Client) { c.HTTP = h }
 }
 
 // WithBaseURL overrides the base URL (useful for tests against a mock server).
 func WithBaseURL(u string) Option {
-	return func(c *Client) { c.baseURL = u }
+	return func(c *ods.Client) { c.BaseURL = u }
 }
 
 // New creates a BOAMP client.
 func New(opts ...Option) *Client {
-	c := &Client{
-		baseURL: defaultBaseURL,
-		http:    &http.Client{Timeout: 30 * time.Second},
+	inner := &ods.Client{
+		Source:  "boamp",
+		BaseURL: defaultBaseURL,
+		HTTP:    &http.Client{Timeout: 30 * time.Second},
+		Map:     mapRecord,
+		Where:   buildWhere,
 	}
 	for _, opt := range opts {
-		opt(c)
+		opt(inner)
 	}
-	return c
+	return &Client{ods: inner}
 }
 
 // Compile-time check: *Client satisfies the muninn.Provider contract.
@@ -78,187 +71,53 @@ var _ muninn.Provider = (*Client)(nil)
 // Name implements muninn.Provider.
 func (c *Client) Name() string { return "boamp" }
 
-// odsResponse mirrors the generic shape of an Explore API v2.1 response.
-type odsResponse struct {
-	TotalCount int              `json:"total_count"`
-	Results    []map[string]any `json:"results"`
-}
-
 // Count returns the total number of tenders matching q without fetching the
-// records (a single request, limit=1). This is the preferred way to estimate
-// "how many tenders?": the total_count returned by the API is not capped by the
-// 10,000 pagination window.
+// records. This is the preferred way to estimate "how many tenders?": the
+// total_count returned by the API is not capped by the 10,000 pagination
+// window.
 func (c *Client) Count(ctx context.Context, q muninn.Query) (int, error) {
-	resp, err := c.fetchPage(ctx, buildWhere(q), 1, 0)
-	if err != nil {
-		return 0, err
-	}
-	return resp.TotalCount, nil
+	return c.ods.Count(ctx, q)
 }
 
-// Search implements muninn.Provider. It fetches ALL records matching q by
-// paginating (pages of maxPageSize), within the offset window allowed by the
-// API (maxOffsetWindow) and, if q.Limit > 0, that explicit cap.
-//
-// Keywords and the date/department filters are pushed server-side via the
-// `where` clause (the API's `q` parameter is ignored in v2.1).
-//
-// When the total exceeds what can be paginated, Search returns the fetched
-// records AND an *ErrTruncated (detectable via errors.As) carrying the real
-// total: the caller may ignore it and use the subset, or switch to Count / the
-// /exports endpoint.
+// Search implements muninn.Provider. It fetches every record matching q by
+// paginating; keywords and the date/department filters are pushed server-side
+// via the `where` clause (the API's `q` parameter is ignored in v2.1). When the
+// total exceeds what can be paginated, it returns the fetched records AND a
+// *muninn.ErrTruncated (detectable via errors.As) carrying the real total.
 func (c *Client) Search(ctx context.Context, q muninn.Query) ([]muninn.Tender, error) {
-	where := buildWhere(q)
-
-	// Effective upper bound: API window, tightened by q.Limit when provided.
-	hardCap := maxOffsetWindow
-	if q.Limit > 0 && q.Limit < hardCap {
-		hardCap = q.Limit
-	}
-
-	var (
-		tenders    []muninn.Tender
-		totalCount int
-	)
-	for offset := 0; offset < hardCap; offset += maxPageSize {
-		pageSize := maxPageSize
-		if remaining := hardCap - offset; remaining < pageSize {
-			pageSize = remaining
-		}
-
-		resp, err := c.fetchPage(ctx, where, pageSize, offset)
-		if err != nil {
-			return tenders, err
-		}
-		totalCount = resp.TotalCount
-
-		for _, rec := range resp.Results {
-			tenders = append(tenders, mapRecord(rec))
-		}
-		// Last page reached (fewer records than requested, or nothing left
-		// server-side).
-		if len(resp.Results) < pageSize || len(tenders) >= totalCount {
-			break
-		}
-	}
-
-	if totalCount > len(tenders) {
-		return tenders, &ErrTruncated{Retrieved: len(tenders), Total: totalCount}
-	}
-	return tenders, nil
+	return c.ods.Search(ctx, q)
 }
 
-// ErrTruncated signals that Search could not fetch every record (total greater
-// than the API pagination window or the requested q.Limit). Total holds the
-// real number of matching tenders.
-type ErrTruncated struct {
-	Retrieved int
-	Total     int
+// buildWhere builds the full ODSQL `where` clause, combining with AND the
+// keyword clause (what actually filters, since the v2.1 API ignores `q`) and
+// the structured filters (departments, dates) on confirmed top-level fields. An
+// empty Query returns "" (no filter → the whole dataset).
+func buildWhere(q muninn.Query) string {
+	return ods.And(ods.KeywordClause(q), deptClause(q), dateClause(q))
 }
 
-func (e *ErrTruncated) Error() string {
-	return fmt.Sprintf("boamp: truncated results: %d retrieved out of %d (pagination cap %d)",
-		e.Retrieved, e.Total, maxOffsetWindow)
-}
-
-// fetchPage performs a single API request and decodes the response. Shared by
-// Search and Count so there is only one HTTP path.
-func (c *Client) fetchPage(ctx context.Context, where string, limit, offset int) (odsResponse, error) {
-	params := url.Values{}
-	if where != "" {
-		params.Set("where", where)
-	}
-	params.Set("limit", strconv.Itoa(limit))
-	if offset > 0 {
-		params.Set("offset", strconv.Itoa(offset))
-	}
-
-	reqURL := c.baseURL + "?" + params.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return odsResponse{}, fmt.Errorf("boamp: build request: %w", err)
-	}
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return odsResponse{}, fmt.Errorf("boamp: request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return odsResponse{}, fmt.Errorf("boamp: unexpected status %d: %s", resp.StatusCode, body)
-	}
-
-	var parsed odsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return odsResponse{}, fmt.Errorf("boamp: decode response: %w", err)
-	}
-	return parsed, nil
-}
-
-// buildKeywordClause turns q.Keywords into a parenthesized ODSQL clause. Two
-// independent knobs:
-//   - ObjetOnly: `objet like "kw"` (phrase in the title, precise) vs `"kw"`
-//     (full-text over all fields, broad and noisy).
-//   - MatchAll: terms joined with AND (intersection) vs OR (union, default).
-//
-// Returns "" when there is no usable keyword.
-func buildKeywordClause(q muninn.Query) string {
-	var parts []string
-	for _, k := range q.Keywords {
-		k = strings.TrimSpace(k)
-		if k == "" {
-			continue
-		}
-		if q.ObjetOnly {
-			parts = append(parts, fmt.Sprintf(`objet like "%s"`, escapeODSQL(k)))
-		} else {
-			parts = append(parts, fmt.Sprintf(`"%s"`, escapeODSQL(k)))
-		}
-	}
-	if len(parts) == 0 {
+// deptClause filters on the confirmed top-level code_departement field.
+func deptClause(q muninn.Query) string {
+	if len(q.Departements) == 0 {
 		return ""
 	}
-	sep := " OR "
-	if q.MatchAll {
-		sep = " AND "
+	var parts []string
+	for _, d := range q.Departements {
+		parts = append(parts, fmt.Sprintf(`code_departement="%s"`, ods.Escape(d)))
 	}
-	return "(" + strings.Join(parts, sep) + ")"
+	return "(" + strings.Join(parts, " OR ") + ")"
 }
 
-// buildWhere builds the full ODSQL `where` clause, combining with AND:
-//   - a keyword clause (see buildKeywordClause) — this is what actually filters,
-//     since the v2.1 API ignores the `q` parameter;
-//   - the structured filters (departments, dates) on confirmed top-level fields.
-//
-// An empty Query returns "" (no filter → the whole dataset).
-func buildWhere(q muninn.Query) string {
-	var clauses []string
-
-	if kw := buildKeywordClause(q); kw != "" {
-		clauses = append(clauses, kw)
-	}
-
-	if len(q.Departements) > 0 {
-		var deptClauses []string
-		for _, d := range q.Departements {
-			deptClauses = append(deptClauses, fmt.Sprintf(`code_departement="%s"`, escapeODSQL(d)))
-		}
-		clauses = append(clauses, "("+strings.Join(deptClauses, " OR ")+")")
-	}
+// dateClause bounds the publication date (dateparution) by q.DateFrom/DateTo.
+func dateClause(q muninn.Query) string {
+	var parts []string
 	if !q.DateFrom.IsZero() {
-		clauses = append(clauses, fmt.Sprintf(`dateparution >= "%s"`, q.DateFrom.Format("2006-01-02")))
+		parts = append(parts, fmt.Sprintf(`dateparution >= "%s"`, q.DateFrom.Format("2006-01-02")))
 	}
 	if !q.DateTo.IsZero() {
-		clauses = append(clauses, fmt.Sprintf(`dateparution <= "%s"`, q.DateTo.Format("2006-01-02")))
+		parts = append(parts, fmt.Sprintf(`dateparution <= "%s"`, q.DateTo.Format("2006-01-02")))
 	}
-	return strings.Join(clauses, " AND ")
-}
-
-func escapeODSQL(s string) string {
-	return strings.ReplaceAll(s, `"`, `\"`)
+	return strings.Join(parts, " AND ")
 }
 
 // mapRecord translates a raw Opendatasoft record into a muninn.Tender. The
@@ -299,12 +158,12 @@ func mapRecord(rec map[string]any) muninn.Tender {
 		t.URL = v
 	}
 	if v, ok := rec["dateparution"].(string); ok {
-		if parsed, err := parseODSDate(v); err == nil {
+		if parsed, err := ods.ParseDate(v); err == nil {
 			t.DatePublication = parsed
 		}
 	}
 	if v, ok := rec["datelimitereponse"].(string); ok {
-		if parsed, err := parseODSDate(v); err == nil {
+		if parsed, err := ods.ParseDate(v); err == nil {
 			t.DateLimiteReponse = parsed
 		}
 	}
@@ -332,15 +191,6 @@ func mapRecord(rec map[string]any) muninn.Tender {
 	}
 
 	return t
-}
-
-// parseODSDate tries the two date formats seen on the Opendatasoft API (date
-// only, or date+time ISO8601).
-func parseODSDate(v string) (time.Time, error) {
-	if t, err := time.Parse(time.RFC3339, v); err == nil {
-		return t, nil
-	}
-	return time.Parse("2006-01-02", v)
 }
 
 // mapAvisType relies on nature_categorise_libelle, whose observed values are

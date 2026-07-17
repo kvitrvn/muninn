@@ -8,16 +8,14 @@ linters:
     - errcheck
     - ineffassign
     - unused
-    - misspell
     - revive
-
-linters-settings:
-  misspell:
-    locale: US
+  # misspell is intentionally omitted: this library carries French domain
+  # vocabulary and BOAMP/DECP/BEAUAMP field names (e.g. nature_categorise_libelle,
+  # "attribue", "decembre"), which a US-English spell checker flags as errors.
 
 issues:
   exclude-rules:
-    # Les exemples godoc privilégient la lisibilité (panic sur erreur).
+    # godoc examples favor readability (panic on error).
     - path: example_test\.go
       linters:
         - errcheck

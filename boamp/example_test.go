@@ -36,10 +36,10 @@ func ExampleClient_Search() {
 		Limit:     300, // bounds the paginated fetch
 	})
 
-	var truncated *boamp.ErrTruncated
+	var truncated *muninn.ErrTruncated
 	switch {
 	case errors.As(err, &truncated):
-		fmt.Printf("%d récupérés sur %d\n", truncated.Retrieved, truncated.Total)
+		fmt.Printf("%d retrieved out of %d\n", truncated.Retrieved, truncated.Total)
 	case err != nil:
 		panic(err)
 	}

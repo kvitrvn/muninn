@@ -1,13 +1,7 @@
 package boamp
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"strconv"
 	"testing"
 
 	"github.com/kvitrvn/muninn"
@@ -135,81 +129,6 @@ func TestBuildWhere(t *testing.T) {
 	}
 }
 
-// newPagingServer simulates the Opendatasoft API: total records served in pages
-// according to the offset parameter, with a constant total_count.
-func newPagingServer(t *testing.T, total int) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		if limit <= 0 {
-			limit = 10
-		}
-		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-
-		results := make([]map[string]any, 0, limit)
-		for i := offset; i < offset+limit && i < total; i++ {
-			results = append(results, map[string]any{
-				"idweb": fmt.Sprintf("rec-%d", i),
-				"objet": "GED",
-			})
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"total_count": total,
-			"results":     results,
-		})
-	}))
-}
-
-func TestSearch_Paginates(t *testing.T) {
-	srv := newPagingServer(t, 250)
-	defer srv.Close()
-
-	client := New(WithBaseURL(srv.URL))
-	got, err := client.Search(context.Background(), muninn.Query{Keywords: []string{"GED"}})
-	if err != nil {
-		t.Fatalf("Search: %v", err)
-	}
-	if len(got) != 250 {
-		t.Errorf("récupérés = %d, attendu 250", len(got))
-	}
-	// Check order/completeness via the first and last SourceID.
-	if got[0].SourceID != "rec-0" || got[249].SourceID != "rec-249" {
-		t.Errorf("bornes = %q..%q", got[0].SourceID, got[249].SourceID)
-	}
-}
-
-func TestCount(t *testing.T) {
-	srv := newPagingServer(t, 250)
-	defer srv.Close()
-
-	client := New(WithBaseURL(srv.URL))
-	n, err := client.Count(context.Background(), muninn.Query{Keywords: []string{"GED"}})
-	if err != nil {
-		t.Fatalf("Count: %v", err)
-	}
-	if n != 250 {
-		t.Errorf("Count = %d, attendu 250", n)
-	}
-}
-
-func TestSearch_TruncatedBeyondWindow(t *testing.T) {
-	// total_count > pagination window (10,000): Search must return the
-	// paginable records AND an *ErrTruncated carrying the real total.
-	srv := newPagingServer(t, 25000)
-	defer srv.Close()
-
-	client := New(WithBaseURL(srv.URL))
-	got, err := client.Search(context.Background(), muninn.Query{Keywords: []string{"GED"}})
-
-	var truncated *ErrTruncated
-	if !errors.As(err, &truncated) {
-		t.Fatalf("attendu *ErrTruncated, obtenu %v", err)
-	}
-	if truncated.Total != 25000 {
-		t.Errorf("Total = %d, attendu 25000", truncated.Total)
-	}
-	if len(got) != maxOffsetWindow {
-		t.Errorf("récupérés = %d, attendu %d (plafond)", len(got), maxOffsetWindow)
-	}
-}
+// Pagination, Count and truncation are exercised generically against the shared
+// Opendatasoft plumbing in internal/ods; here we only cover the BOAMP-specific
+// record mapping and where-clause building.
