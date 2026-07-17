@@ -1,0 +1,23 @@
+run:
+  timeout: 3m
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - misspell
+    - revive
+
+linters-settings:
+  misspell:
+    locale: US
+
+issues:
+  exclude-rules:
+    # Les exemples godoc privilégient la lisibilité (panic sur erreur).
+    - path: example_test\.go
+      linters:
+        - errcheck
