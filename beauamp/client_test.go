@@ -53,22 +53,48 @@ func TestMapRecord(t *testing.T) {
 }
 
 // newTabularServer serves a fixed set of rows, honoring objet__contains and
-// page/page_size like the data.gouv.fr tabular API.
+// page/page_size like the data.gouv.fr tabular API. CPV/amount/SIREN filters
+// are also applied server-side so the test mirrors the real per-column push.
 func newTabularServer(t *testing.T, rows []map[string]any) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		term := r.URL.Query().Get("objet__contains")
+		q := r.URL.Query()
+		term := q.Get("objet__contains")
+		wantCPV := q.Get("cpv__startswith")
+		minAmt := q.Get("valeur_totale__gte")
+		maxAmt := q.Get("valeur_totale__lte")
+		wantSIREN := q.Get("siren_acheteur")
+
 		var matched []map[string]any
 		for _, row := range rows {
-			if term == "" || strings.Contains(strings.ToLower(str(row["objet"])), strings.ToLower(term)) {
-				matched = append(matched, row)
+			if term != "" && !strings.Contains(strings.ToLower(anyStr(row["objet"])), strings.ToLower(term)) {
+				continue
 			}
+			if wantCPV != "" && !strings.HasPrefix(anyStr(row["cpv"]), wantCPV) {
+				continue
+			}
+			if minAmt != "" {
+				amt := anyFloat(row["valeur_totale"])
+				if amt < toFloat(minAmt) {
+					continue
+				}
+			}
+			if maxAmt != "" {
+				amt := anyFloat(row["valeur_totale"])
+				if amt > toFloat(maxAmt) {
+					continue
+				}
+			}
+			if wantSIREN != "" && anyStr(row["siren_acheteur"]) != wantSIREN {
+				continue
+			}
+			matched = append(matched, row)
 		}
-		size, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+		size, _ := strconv.Atoi(q.Get("page_size"))
 		if size <= 0 {
 			size = 20
 		}
-		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		page, _ := strconv.Atoi(q.Get("page"))
 		if page <= 0 {
 			page = 1
 		}
@@ -89,6 +115,39 @@ func newTabularServer(t *testing.T, rows []map[string]any) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
+}
+
+// anyStr returns the value as a string, tolerating numeric or boolean types so
+// tests can use literal "72000000" or float64(840136) interchangeably.
+func anyStr(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(x)
+	}
+	return ""
+}
+
+// anyFloat reads a value as a float64, returning 0 when absent or unparseable.
+func anyFloat(v any) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case int:
+		return float64(x)
+	case string:
+		f, _ := strconv.ParseFloat(x, 64)
+		return f
+	}
+	return 0
+}
+
+func toFloat(s string) float64 {
+	f, _ := strconv.ParseFloat(s, 64)
+	return f
 }
 
 func testClient(url string) *Client {
@@ -151,6 +210,31 @@ func TestCount_SumsTotals(t *testing.T) {
 	// GED total (2) + archivage total (1) = 3 (OR upper bound).
 	if n != 3 {
 		t.Errorf("Count = %d, want 3", n)
+	}
+}
+
+func TestSearch_AdvancedFiltersPushed(t *testing.T) {
+	rows := []map[string]any{
+		{"id_boamp_attribution": "a", "objet": "GED", "siren_acheteur": "111111111", "cpv": "72000000", "valeur_totale": float64(50000)},
+		{"id_boamp_attribution": "b", "objet": "GED", "siren_acheteur": "222222222", "cpv": "30190000", "valeur_totale": float64(500000)},
+		{"id_boamp_attribution": "c", "objet": "GED", "siren_acheteur": "222222222", "cpv": "72000000", "valeur_totale": float64(5000000)},
+	}
+	srv := newTabularServer(t, rows)
+	defer srv.Close()
+
+	got, err := testClient(srv.URL).Search(context.Background(),
+		muninn.Query{
+			Keywords:   []string{"GED"},
+			CPVCodes:   []string{"72"},
+			MontantMin: 100000,
+			BuyerSIREN: "222222222",
+		})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// Only "c" matches all four filters (cpv 72*, montant >= 100k, SIREN 222).
+	if len(got) != 1 || got[0].SourceID != "c" {
+		t.Errorf("got %d tenders, want only c: %+v", len(got), got)
 	}
 }
 

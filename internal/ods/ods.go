@@ -206,3 +206,54 @@ func ParseDate(v string) (time.Time, error) {
 	}
 	return time.Parse("2006-01-02", v)
 }
+
+// CPVClause builds an ODSQL clause matching any of the supplied CPV code
+// prefixes against column. A code matches when the column value starts with the
+// prefix (using the Opendatasoft `starts with` operator). Returns "" when no
+// prefix is provided. CPV codes should be the canonical 8-digit root (the same
+// normalization Tender.cpvRoot applies); the caller is responsible for it so
+// this helper stays free of source-specific quirks.
+func CPVClause(q muninn.Query, column string) string {
+	if len(q.CPVCodes) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, c := range q.CPVCodes {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf(`%s starts with "%s"`, column, Escape(c)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "(" + strings.Join(parts, " OR ") + ")"
+}
+
+// AmountClause builds an ODSQL amount range clause against the named column.
+// Zero bounds are dropped: only the supplied bound(s) participate. The values
+// are formatted as plain numbers (no thousands separator), which ODSQL parses
+// as numeric.
+func AmountClause(q muninn.Query, column string) string {
+	if q.MontantMin <= 0 && q.MontantMax <= 0 {
+		return ""
+	}
+	var parts []string
+	if q.MontantMin > 0 {
+		parts = append(parts, fmt.Sprintf(`%s >= %g`, column, q.MontantMin))
+	}
+	if q.MontantMax > 0 {
+		parts = append(parts, fmt.Sprintf(`%s <= %g`, column, q.MontantMax))
+	}
+	return "(" + strings.Join(parts, " AND ") + ")"
+}
+
+// SIRENClause builds an ODSQL exact-match clause against the named SIREN
+// column. Returns "" when no SIREN is requested.
+func SIRENClause(q muninn.Query, column string) string {
+	if strings.TrimSpace(q.BuyerSIREN) == "" {
+		return ""
+	}
+	return fmt.Sprintf(`%s = "%s"`, column, Escape(strings.TrimSpace(q.BuyerSIREN)))
+}

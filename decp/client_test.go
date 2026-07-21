@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/kvitrvn/muninn"
+	"github.com/kvitrvn/muninn/internal/ods"
 )
 
 func TestMapRecord_Award(t *testing.T) {
@@ -66,5 +67,56 @@ func TestReadAmount(t *testing.T) {
 	}
 	if got := readAmount(nil); got != 0 {
 		t.Errorf("nil = %v", got)
+	}
+}
+
+func TestBuildWhere_AdvancedFilters(t *testing.T) {
+	got := buildWhere(muninn.Query{
+		CPVCodes:   []string{"72", "3019"},
+		MontantMin: 40000,
+		MontantMax: 500000,
+		BuyerSIREN: "210500237",
+	})
+	want := `(codecpv starts with "72" OR codecpv starts with "3019") AND (montant >= 40000 AND montant <= 500000) AND acheteur_id starts with "210500237"`
+	if got != want {
+		t.Errorf("buildWhere() = %q\nwant: %q", got, want)
+	}
+}
+
+func TestBuildWhere_NoAdvancedFilters(t *testing.T) {
+	// Without advanced filters, buildWhere must not emit any clause for them.
+	got := buildWhere(muninn.Query{Keywords: []string{"GED"}})
+	if got != `("GED")` {
+		t.Errorf("buildWhere() = %q, want %q", got, `("GED")`)
+	}
+}
+
+func TestCPVClause(t *testing.T) {
+	if got := ods.CPVClause(muninn.Query{CPVCodes: []string{"72"}}, "codecpv"); got != `(codecpv starts with "72")` {
+		t.Errorf("CPVClause = %q", got)
+	}
+	if got := ods.CPVClause(muninn.Query{}, "codecpv"); got != "" {
+		t.Errorf("empty CPVClause = %q", got)
+	}
+}
+
+func TestAmountClause(t *testing.T) {
+	if got := ods.AmountClause(muninn.Query{MontantMin: 100, MontantMax: 1000}, "m"); got != `(m >= 100 AND m <= 1000)` {
+		t.Errorf("AmountClause = %q", got)
+	}
+	if got := ods.AmountClause(muninn.Query{MontantMin: 100}, "m"); got != `(m >= 100)` {
+		t.Errorf("AmountClause min only = %q", got)
+	}
+	if got := ods.AmountClause(muninn.Query{}, "m"); got != "" {
+		t.Errorf("empty AmountClause = %q", got)
+	}
+}
+
+func TestSIRENClause(t *testing.T) {
+	if got := ods.SIRENClause(muninn.Query{BuyerSIREN: "111"}, "col"); got != `col = "111"` {
+		t.Errorf("SIRENClause = %q", got)
+	}
+	if got := ods.SIRENClause(muninn.Query{}, "col"); got != "" {
+		t.Errorf("empty SIRENClause = %q", got)
 	}
 }

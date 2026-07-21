@@ -1,7 +1,10 @@
 package boamp
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/kvitrvn/muninn"
@@ -132,3 +135,73 @@ func TestBuildWhere(t *testing.T) {
 // Pagination, Count and truncation are exercised generically against the shared
 // Opendatasoft plumbing in internal/ods; here we only cover the BOAMP-specific
 // record mapping and where-clause building.
+
+// TestSearch_AdvancedFiltersPostFetch verifies the CPV / amount / SIREN filters
+// are applied client-side after the API paginates, since BOAMP exposes none of
+// them as a top-level column.
+func TestSearch_AdvancedFiltersPostFetch(t *testing.T) {
+	rows := []map[string]any{
+		{
+			"idweb":       "a",
+			"objet":       "GED un",
+			"nomacheteur": "Acheteur A",
+			"donnees":     `{"OBJET":{"CPV":{"PRINCIPAL":"72000000"}},"ORGANISME":{"ACHETEUR":{"IDENTIFICATION":{"SIREN":"111111111"}}}}`,
+		},
+		{
+			"idweb":       "b",
+			"objet":       "Fournitures",
+			"nomacheteur": "Acheteur B",
+			"donnees":     `{"OBJET":{"CPV":{"PRINCIPAL":"30190000"}},"ORGANISME":{"ACHETEUR":{"IDENTIFICATION":{"SIREN":"222222222"}}}}`,
+		},
+		{
+			"idweb":       "c",
+			"objet":       "GED deux",
+			"nomacheteur": "Acheteur A",
+			"donnees":     `{"OBJET":{"CPV":{"PRINCIPAL":"72500000"}},"ORGANISME":{"ACHETEUR":{"IDENTIFICATION":{"SIREN":"111111111"}}}}`,
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total_count": len(rows),
+			"results":     rows,
+		})
+	}))
+	defer srv.Close()
+
+	c := New(WithBaseURL(srv.URL), WithHTTPClient(http.DefaultClient))
+	got, err := c.Search(context.Background(), muninn.Query{
+		CPVCodes:   []string{"72"},
+		BuyerSIREN: "111111111",
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	// Only "a" and "c" match CPV 72* and buyer SIREN 111111111.
+	if len(got) != 2 {
+		t.Fatalf("got %d tenders, want 2: %+v", len(got), got)
+	}
+	ids := map[string]bool{}
+	for _, x := range got {
+		ids[x.SourceID] = true
+	}
+	if !ids["a"] || !ids["c"] {
+		t.Errorf("ids = %v, want {a, c}", ids)
+	}
+}
+
+func TestBuildWhere_AdvancedFiltersIgnoredAtWhereLevel(t *testing.T) {
+	// BOAMP cannot push CPV/amount/SIREN as a server-side where clause: they
+	// live in the nested "donnees" blob. The where clause is unchanged when
+	// those filters are set.
+	got := buildWhere(muninn.Query{
+		Keywords:   []string{"GED"},
+		CPVCodes:   []string{"72"},
+		MontantMin: 100000,
+		BuyerSIREN: "111111111",
+	})
+	want := `("GED")`
+	if got != want {
+		t.Errorf("buildWhere() = %q, want %q (advanced filters stay client-side)", got, want)
+	}
+}

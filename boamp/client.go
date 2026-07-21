@@ -18,6 +18,7 @@ package boamp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/kvitrvn/muninn"
 	"github.com/kvitrvn/muninn/internal/ods"
+	"github.com/kvitrvn/muninn/search"
 )
 
 const defaultBaseURL = "https://boamp-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/boamp/records"
@@ -81,17 +83,46 @@ func (c *Client) Count(ctx context.Context, q muninn.Query) (int, error) {
 
 // Search implements muninn.Provider. It fetches every record matching q by
 // paginating; keywords and the date/department filters are pushed server-side
-// via the `where` clause (the API's `q` parameter is ignored in v2.1). When the
-// total exceeds what can be paginated, it returns the fetched records AND a
-// *muninn.ErrTruncated (detectable via errors.As) carrying the real total.
+// via the `where` clause (the API's `q` parameter is ignored in v2.1). CPV
+// codes, amount range and buyer SIREN are not exposed as top-level BOAMP
+// columns (CPV lives in the nested "donnees" blob), so they are applied as a
+// client-side filter on the paginated result. When the total exceeds what can
+// be paginated, it returns the fetched records AND a *muninn.ErrTruncated
+// (detectable via errors.As) carrying the real total.
 func (c *Client) Search(ctx context.Context, q muninn.Query) ([]muninn.Tender, error) {
-	return c.ods.Search(ctx, q)
+	tenders, err := c.ods.Search(ctx, q)
+	if err != nil {
+		// A truncation is non-fatal: we still want to surface the records we did
+		// fetch (post-filtered), but not pretend to a fuller result than the
+		// server told us about. The caller already sees the ErrTruncated via
+		// errors.As, and the post-filtered slice is what we could refine.
+		var tr *muninn.ErrTruncated
+		if !errors.As(err, &tr) {
+			return tenders, err
+		}
+		tenders, err = search.AdvancedFilter{
+			CPVCodes:   q.CPVCodes,
+			MontantMin: q.MontantMin,
+			MontantMax: q.MontantMax,
+			BuyerSIREN: q.BuyerSIREN,
+		}.Apply(tenders), tr
+		return tenders, err
+	}
+	return search.AdvancedFilter{
+		CPVCodes:   q.CPVCodes,
+		MontantMin: q.MontantMin,
+		MontantMax: q.MontantMax,
+		BuyerSIREN: q.BuyerSIREN,
+	}.Apply(tenders), nil
 }
 
 // buildWhere builds the full ODSQL `where` clause, combining with AND the
 // keyword clause (what actually filters, since the v2.1 API ignores `q`) and
-// the structured filters (departments, dates) on confirmed top-level fields. An
-// empty Query returns "" (no filter → the whole dataset).
+// the structured filters (departments, dates) on confirmed top-level fields.
+// The amount range and buyer SIREN are post-filtered in Search because BOAMP
+// exposes neither as a top-level column (the amount is rarely disclosed and the
+// buyer id lives in the nested "donnees" blob). An empty Query returns "" (no
+// filter → the whole dataset).
 func buildWhere(q muninn.Query) string {
 	return ods.And(ods.KeywordClause(q), deptClause(q), dateClause(q))
 }
@@ -186,6 +217,20 @@ func mapRecord(rec map[string]any) muninn.Tender {
 			}
 			if t.Engagement == muninn.EngagementInconnu {
 				t.Engagement = mapEngagementFromNested(nested)
+			}
+			// Best-effort: extract the buyer's SIREN/SIRET from the eForms
+			// identification block when present, so the post-fetch filter can
+			// narrow on it. Only one SIRET typically shows up here, but BOAMP
+			// may surface SIRET-like fields under different keys across versions.
+			if t.Buyer.SIREN == "" && t.Buyer.SIRET == "" {
+				if id := digDict(nested, "ORGANISME", "ACHETEUR", "IDENTIFICATION"); id != nil {
+					if v, ok := id["SIREN"].(string); ok && v != "" {
+						t.Buyer.SIREN = v
+					}
+					if v, ok := id["SIRET"].(string); ok && v != "" && t.Buyer.SIRET == "" {
+						t.Buyer.SIRET = v
+					}
+				}
 			}
 		}
 	}

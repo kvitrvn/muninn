@@ -89,8 +89,12 @@ func (c *Client) Search(ctx context.Context, q muninn.Query) ([]muninn.Tender, e
 	return c.ods.Search(ctx, q)
 }
 
-// buildWhere combines the keyword clause with a notification-date bound. DECP
-// has no simple department field, so q.Departements is ignored here.
+// buildWhere combines the keyword clause with a notification-date bound and
+// the advanced filters (CPV, amount, buyer SIREN) when set. DECP exposes all
+// of these as native columns, so they are pushed server-side. DECP has no
+// dedicated SIREN column; the buyer id is a SIRET, so the SIREN filter matches
+// the first 9 digits of that SIRET (a SIRET is SIREN + NIC). DECP has no
+// simple department field, so q.Departements is ignored here.
 func buildWhere(q muninn.Query) string {
 	var date []string
 	if !q.DateFrom.IsZero() {
@@ -99,7 +103,17 @@ func buildWhere(q muninn.Query) string {
 	if !q.DateTo.IsZero() {
 		date = append(date, fmt.Sprintf(`datenotification <= "%s"`, q.DateTo.Format("2006-01-02")))
 	}
-	return ods.And(ods.KeywordClause(q), strings.Join(date, " AND "))
+	var siren string
+	if s := strings.TrimSpace(q.BuyerSIREN); s != "" {
+		siren = fmt.Sprintf(`acheteur_id starts with "%s"`, ods.Escape(s))
+	}
+	return ods.And(
+		ods.KeywordClause(q),
+		strings.Join(date, " AND "),
+		ods.CPVClause(q, "codecpv"),
+		ods.AmountClause(q, "montant"),
+		siren,
+	)
 }
 
 // mapRecord translates a raw DECP record into a muninn.Tender. Every DECP record

@@ -111,7 +111,9 @@ func (c *Client) Name() string { return "beauamp" }
 // resources and each keyword, of the tabular API's total for that filter. For
 // several keywords this is an OR upper bound (a notice matching two keywords is
 // counted twice) and MatchAll is not applied — use Search for an exact,
-// deduplicated, AND-aware result set.
+// deduplicated, AND-aware result set. The advanced filters (CPV, amount range,
+// buyer SIREN) are pushed into every per-keyword request, so the upper bound
+// holds with them applied as well.
 func (c *Client) Count(ctx context.Context, q muninn.Query) (int, error) {
 	resources, err := c.resolveResources(ctx, q)
 	if err != nil {
@@ -122,7 +124,7 @@ func (c *Client) Count(ctx context.Context, q muninn.Query) (int, error) {
 	total := 0
 	for _, res := range resources {
 		for _, term := range terms {
-			page, err := c.fetchPage(ctx, res, term, 1, 1)
+			page, err := c.fetchPage(ctx, res, term, 1, 1, q)
 			if err != nil {
 				return 0, err
 			}
@@ -135,8 +137,10 @@ func (c *Client) Count(ctx context.Context, q muninn.Query) (int, error) {
 // Search fetches the matching notices across the resolved resources, maps them
 // to Tenders, deduplicates them (a notice may recur across resources or match
 // several keywords), and — when q.MatchAll is set — keeps only those whose objet
-// contains every keyword. It returns a *muninn.ErrTruncated when the fetch hit
-// the q.Limit / maxFetch bound before exhausting the matches.
+// contains every keyword. The advanced filters (CPV, amount range, buyer SIREN)
+// are pushed into each per-keyword tabular query so the API narrows the page
+// before it ships. It returns a *muninn.ErrTruncated when the fetch hit the
+// q.Limit / maxFetch bound before exhausting the matches.
 func (c *Client) Search(ctx context.Context, q muninn.Query) ([]muninn.Tender, error) {
 	resources, err := c.resolveResources(ctx, q)
 	if err != nil {
@@ -158,7 +162,7 @@ func (c *Client) Search(ctx context.Context, q muninn.Query) ([]muninn.Tender, e
 	for _, res := range resources {
 		for _, term := range terms {
 			for page := 1; ; page++ {
-				resp, err := c.fetchPage(ctx, res, term, pageSize, page)
+				resp, err := c.fetchPage(ctx, res, term, pageSize, page, q)
 				if err != nil {
 					return out, err
 				}
@@ -235,11 +239,49 @@ type tabularResponse struct {
 }
 
 // fetchPage requests one page of a resource, optionally filtered by a keyword on
-// the objet column.
-func (c *Client) fetchPage(ctx context.Context, resourceID, keyword string, size, page int) (tabularResponse, error) {
+// the objet column plus the advanced criteria (CPV prefix, amount range, buyer
+// SIREN). The advanced filters are pushed server-side via the tabular API's
+// per-column operators so the API returns only matching rows.
+func (c *Client) fetchPage(ctx context.Context, resourceID, keyword string, size, page int, q muninn.Query) (tabularResponse, error) {
 	params := url.Values{}
 	if keyword != "" {
 		params.Set(searchField+"__contains", keyword)
+	}
+	// CPV: the API supports a "starts_with" operator on text columns.
+	if len(q.CPVCodes) > 0 {
+		var prefixes []string
+		for _, c := range q.CPVCodes {
+			c = strings.TrimSpace(c)
+			if c == "" {
+				continue
+			}
+			prefixes = append(prefixes, c)
+		}
+		switch len(prefixes) {
+		case 1:
+			params.Set("cpv__startswith", prefixes[0])
+		default:
+			// Multiple CPV prefixes combine as OR via the `or` parameter.
+			var parts []string
+			for _, p := range prefixes {
+				parts = append(parts, fmt.Sprintf(`cpv__startswith="%s"`, p))
+			}
+			params.Set("or", "("+strings.Join(parts, ",")+")")
+		}
+	}
+	// Amount range: BEAUAMP exposes several amount columns; the tabular API
+	// only filters per column, so we narrow on the first present one. We pick
+	// "valeur_totale" as the canonical column — the mapper falls back to other
+	// columns when this one is missing, so a false positive (an awarded amount
+	// recorded on a sibling column only) is the only consequence.
+	if q.MontantMin > 0 {
+		params.Set("valeur_totale__gte", strconv.FormatFloat(q.MontantMin, 'f', -1, 64))
+	}
+	if q.MontantMax > 0 {
+		params.Set("valeur_totale__lte", strconv.FormatFloat(q.MontantMax, 'f', -1, 64))
+	}
+	if s := strings.TrimSpace(q.BuyerSIREN); s != "" {
+		params.Set("siren_acheteur", s)
 	}
 	params.Set("page_size", strconv.Itoa(size))
 	params.Set("page", strconv.Itoa(page))

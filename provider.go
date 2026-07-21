@@ -27,6 +27,26 @@ type Query struct {
 	DateFrom time.Time
 	DateTo   time.Time
 
+	// CPVCodes filters by CPV code prefix (e.g. ["72"], ["3019"]). A match
+	// is true when any code in the tender starts with any of the requested
+	// prefixes. Pushed server-side when the source exposes CPV as a filterable
+	// column, otherwise applied post-fetch.
+	CPVCodes []string
+
+	// MontantMin bounds the awarded amount in euros (inclusive). Zero means
+	// no lower bound.
+	MontantMin float64
+
+	// MontantMax bounds the awarded amount in euros (inclusive). Zero means
+	// no upper bound. When MontantMin and MontantMax are both zero the amount
+	// is unfiltered; either bound may be set independently.
+	MontantMax float64
+
+	// BuyerSIREN filters by the buyer's 9-digit SIREN (exact match). Empty
+	// means no filter. SIREN (not SIRET) is the stable identifier across
+	// establishments of the same legal entity.
+	BuyerSIREN string
+
 	// Limit caps the number of results returned by a provider
 	// (0 = provider default).
 	Limit int
