@@ -69,6 +69,80 @@ func TestCapabilities_SupplierSIRETIsUnsupported(t *testing.T) {
 	}
 }
 
+func TestCapabilities_SupplierSIRENIsApproximate(t *testing.T) {
+	if got := New().Capabilities().Support(muninn.FilterSupplierSIREN); got != muninn.Approximate {
+		t.Fatalf("supplier SIREN support = %v, want Approximate", got)
+	}
+}
+
+func TestMapRecord_LegacyAwardSupplier(t *testing.T) {
+	rec := map[string]any{
+		"idweb":     "16-10001",
+		"titulaire": []any{"SCOP ACME NUMERIQUE"},
+		"donnees": `{
+			"ATTRIBUTION": {
+				"DECISION": {
+					"TITULAIRE": {
+						"DENOMINATION": "SCOP ACME NUMERIQUE",
+						"VILLE": "Dijon"
+					}
+				}
+			}
+		}`,
+	}
+
+	got := mapRecord(rec)
+	if len(got.Suppliers) != 1 ||
+		got.Suppliers[0].Nom != "SCOP ACME NUMERIQUE" ||
+		got.Suppliers[0].Ville != "Dijon" {
+		t.Fatalf("Suppliers = %+v, want legacy ACME winner", got.Suppliers)
+	}
+}
+
+func TestMapRecord_EFormsAwardSupplier(t *testing.T) {
+	rec := map[string]any{
+		"idweb": "24-30003",
+		"donnees": `{
+			"EFORMS": {
+				"ContractAwardNotice": {
+					"efac:NoticeResult": {
+						"efac:TenderingParty": {
+							"efac:Tenderer": {"cbc:ID": "ORG-0004"}
+						}
+					},
+					"efac:Organizations": {
+						"efac:Organization": [
+							{
+								"efac:Company": {
+									"cac:PartyIdentification": {"cbc:ID": "ORG-0001"},
+									"cac:PartyName": {"cbc:Name": "CNOUS"},
+									"cac:PartyLegalEntity": {"cbc:CompanyID": "18004401800026"}
+								}
+							},
+							{
+								"efac:Company": {
+									"cac:PartyIdentification": {"cbc:ID": "ORG-0004"},
+									"cac:PartyName": {"cbc:Name": "ACME Numérique"},
+									"cac:PostalAddress": {"cbc:CityName": "Dijon"},
+									"cac:PartyLegalEntity": {"cbc:CompanyID": "12345678900010"}
+								}
+							}
+						]
+					}
+				}
+			}
+		}`,
+	}
+
+	got := mapRecord(rec)
+	if len(got.Suppliers) != 1 ||
+		got.Suppliers[0].Nom != "ACME Numérique" ||
+		got.Suppliers[0].SIRET != "12345678900010" ||
+		got.Suppliers[0].Ville != "Dijon" {
+		t.Fatalf("Suppliers = %+v, want eForms ACME winner only", got.Suppliers)
+	}
+}
+
 func TestMapRecord_FrameworkAgreement(t *testing.T) {
 	rec := map[string]any{
 		"idweb":       "23-999999",
@@ -142,6 +216,24 @@ func TestBuildWhere(t *testing.T) {
 	}
 }
 
+func TestBuildWhereWithSupplierNamesCombinesCriteria(t *testing.T) {
+	got := buildWhereWithSupplierNames(
+		muninn.Query{
+			Keywords:      []string{"maintenance"},
+			ObjetOnly:     true,
+			SupplierSIREN: "123456789",
+			PublishedFrom: time.Date(2016, time.January, 1, 0, 0, 0, 0, time.UTC),
+			PublishedTo:   time.Date(2024, time.December, 31, 0, 0, 0, 0, time.UTC),
+		},
+		[]string{"ACME NUMERIQUE"},
+	)
+	want := `(objet like "maintenance") AND ("123456789" OR "ACME NUMERIQUE") AND ` +
+		`dateparution >= "2016-01-01" AND dateparution <= "2024-12-31"`
+	if got != want {
+		t.Errorf("buildWhereWithSupplierNames() = %q\nwant: %q", got, want)
+	}
+}
+
 // Pagination, Count and truncation are exercised generically against the shared
 // Opendatasoft plumbing in internal/ods; here we only cover the BOAMP-specific
 // record mapping and where-clause building.
@@ -197,6 +289,81 @@ func TestSearch_AdvancedFiltersPostFetch(t *testing.T) {
 	}
 	if !ids["a"] || !ids["c"] {
 		t.Errorf("ids = %v, want {a, c}", ids)
+	}
+}
+
+func TestSearch_SupplierSIRENFindsLegacyAndEFormsAwards(t *testing.T) {
+	const siren = "123456789"
+	rows := []map[string]any{
+		{
+			"idweb":                     "16-10001",
+			"objet":                     "Maintenance applicative historique",
+			"titulaire":                 []any{"SCOP ACME NUMERIQUE"},
+			"nature_categorise_libelle": "Résultat de marché/",
+		},
+		{
+			"idweb":                     "20-20002",
+			"objet":                     "Tierce maintenance applicative",
+			"titulaire":                 []any{"acme numérique"},
+			"nature_categorise_libelle": "Résultat de marché/",
+		},
+		{
+			"idweb":                     "24-30003",
+			"objet":                     "Maintenance et évolutions applicatives",
+			"nature_categorise_libelle": "Résultat de marché/",
+			"donnees": `{
+				"EFORMS": {
+					"ContractAwardNotice": {
+						"efac:NoticeResult": {
+							"efac:TenderingParty": {
+								"efac:Tenderer": {"cbc:ID": "ORG-0004"}
+							}
+						},
+						"efac:Organizations": {
+							"efac:Organization": {
+								"efac:Company": {
+									"cac:PartyIdentification": {"cbc:ID": "ORG-0004"},
+									"cac:PartyName": {"cbc:Name": "ACME Numérique"},
+									"cac:PartyLegalEntity": {"cbc:CompanyID": "12345678900010"}
+								}
+							}
+						}
+					}
+				}
+			}`,
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wantWhere := `("123456789" OR "ACME NUMERIQUE")`
+		if got := r.URL.Query().Get("where"); got != wantWhere {
+			t.Errorf("where = %q, want %q", got, wantWhere)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total_count": len(rows),
+			"results":     rows,
+		})
+	}))
+	defer srv.Close()
+
+	client := New(
+		WithBaseURL(srv.URL),
+		WithHTTPClient(http.DefaultClient),
+		WithSupplierNameResolver(func(context.Context, string) ([]string, error) {
+			return []string{"ACME NUMERIQUE"}, nil
+		}),
+	)
+	got, err := client.Search(context.Background(), muninn.Query{SupplierSIREN: siren})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got.Items) != 3 {
+		t.Fatalf("items = %+v, want the three ACME awards", got.Items)
+	}
+	for _, tender := range got.Items {
+		if len(tender.Suppliers) != 1 || tender.Suppliers[0].SIREN9() != siren {
+			t.Errorf("%s suppliers = %+v", tender.Sources[0].ID, tender.Suppliers)
+		}
 	}
 }
 

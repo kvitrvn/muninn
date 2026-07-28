@@ -18,6 +18,7 @@ package boamp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -35,27 +36,39 @@ const defaultBaseURL = "https://boamp-datadila.opendatasoft.com/api/explore/v2.1
 // plumbing lives in internal/ods; this package supplies the base URL, the
 // where-clause field names, and the record mapping.
 type Client struct {
-	ods *ods.Client
+	ods                  *ods.Client
+	supplierNameResolver SupplierNameResolver
 }
 
 // Option configures a Client.
-type Option func(*ods.Client)
+type Option func(*Client)
+
+// SupplierNameResolver resolves the known names of a legal entity from its
+// SIREN. BOAMP uses them to find legacy award notices that identify winners by
+// name only. The default resolver calls the official French company-search API.
+type SupplierNameResolver func(ctx context.Context, siren string) ([]string, error)
 
 // WithHTTPClient injects a custom *http.Client (timeouts, instrumented
 // transport, proxy...).
 func WithHTTPClient(h *http.Client) Option {
-	return func(c *ods.Client) { c.HTTP = h }
+	return func(c *Client) { c.ods.HTTP = h }
 }
 
 // WithBaseURL overrides the base URL (useful for tests against a mock server).
 func WithBaseURL(u string) Option {
-	return func(c *ods.Client) { c.BaseURL = u }
+	return func(c *Client) { c.ods.BaseURL = u }
 }
 
 // WithRetryPolicy overrides the retry/backoff policy applied when the API
 // responds with 429/5xx. The default is retry.DefaultRetryPolicy.
 func WithRetryPolicy(p retry.Policy) Option {
-	return func(c *ods.Client) { c.Retry = p }
+	return func(c *Client) { c.ods.Retry = p }
+}
+
+// WithSupplierNameResolver overrides the SIREN-to-name resolver. It is useful
+// for offline applications and deterministic tests.
+func WithSupplierNameResolver(resolver SupplierNameResolver) Option {
+	return func(c *Client) { c.supplierNameResolver = resolver }
 }
 
 // New creates a BOAMP client.
@@ -67,10 +80,12 @@ func New(opts ...Option) *Client {
 		Map:     mapRecord,
 		Where:   buildWhere,
 	}
+	client := &Client{ods: inner}
+	client.supplierNameResolver = client.resolveSupplierNames
 	for _, opt := range opts {
-		opt(inner)
+		opt(client)
 	}
-	return &Client{ods: inner}
+	return client
 }
 
 // Compile-time check: *Client satisfies the muninn.Provider contract.
@@ -90,6 +105,7 @@ func (c *Client) Capabilities() muninn.Capabilities {
 		muninn.FilterDeadline:      muninn.Exact,
 		muninn.FilterCPV:           muninn.Approximate,
 		muninn.FilterBuyerSIREN:    muninn.Approximate,
+		muninn.FilterSupplierSIREN: muninn.Approximate,
 		muninn.FilterNoticeType:    muninn.Exact,
 		muninn.FilterStatusOpen:    muninn.Exact,
 		muninn.FilterStatusClosed:  muninn.Exact,
@@ -118,17 +134,40 @@ func (c *Client) Search(ctx context.Context, q muninn.Query) (muninn.ProviderRes
 	if err := muninn.ValidateCapabilities(q, c.Capabilities()); err != nil {
 		return muninn.ProviderResult{}, err
 	}
-	result, err := c.ods.Search(ctx, q)
+	var (
+		supplierNames []string
+		resolverErr   error
+	)
+	if siren := strings.TrimSpace(q.SupplierSIREN); siren != "" && c.supplierNameResolver != nil {
+		supplierNames, resolverErr = c.supplierNameResolver(ctx, siren)
+	}
+
+	native := *c.ods
+	native.Where = func(nativeQuery muninn.Query) string {
+		return buildWhereWithSupplierNames(nativeQuery, supplierNames)
+	}
+	result, err := native.Search(ctx, q)
+	if siren := strings.TrimSpace(q.SupplierSIREN); siren != "" {
+		for index := range result.Items {
+			result.Items[index].Suppliers = identifySuppliers(
+				result.Items[index].Suppliers,
+				siren,
+				supplierNames,
+			)
+		}
+	}
 	result.Items = search.AdvancedFilter{
-		CPVCodes:   q.CPVCodes,
-		BuyerSIREN: q.BuyerSIREN,
+		CPVCodes:      q.CPVCodes,
+		BuyerSIREN:    q.BuyerSIREN,
+		SupplierSIREN: q.SupplierSIREN,
 	}.Apply(result.Items)
 	at := q.OpenAt
 	if at.IsZero() {
 		at = time.Now()
 	}
 	result.Items = muninn.FilterTenders(result.Items, q, at)
-	if len(q.CPVCodes) > 0 || q.BuyerSIREN != "" || len(q.NoticeTypes) > 0 || len(q.Statuses) > 0 ||
+	if len(q.CPVCodes) > 0 || q.BuyerSIREN != "" || q.SupplierSIREN != "" ||
+		len(q.NoticeTypes) > 0 || len(q.Statuses) > 0 ||
 		!q.DeadlineFrom.IsZero() || !q.DeadlineTo.IsZero() {
 		if !result.Truncated {
 			result.Total = len(result.Items)
@@ -137,7 +176,7 @@ func (c *Client) Search(ctx context.Context, q muninn.Query) (muninn.ProviderRes
 			result.TotalExact = false
 		}
 	}
-	return result, err
+	return result, errors.Join(err, resolverErr)
 }
 
 // buildWhere builds the full ODSQL `where` clause, combining with AND the
@@ -148,7 +187,16 @@ func (c *Client) Search(ctx context.Context, q muninn.Query) (muninn.ProviderRes
 // buyer id lives in the nested "donnees" blob). An empty Query returns "" (no
 // filter → the whole dataset).
 func buildWhere(q muninn.Query) string {
-	return ods.And(ods.KeywordClause(q), deptClause(q), dateClause(q))
+	return buildWhereWithSupplierNames(q, nil)
+}
+
+func buildWhereWithSupplierNames(q muninn.Query, supplierNames []string) string {
+	return ods.And(
+		ods.KeywordClause(q),
+		supplierIdentityClause(q.SupplierSIREN, supplierNames),
+		deptClause(q),
+		dateClause(q),
+	)
 }
 
 // deptClause filters on the confirmed top-level code_departement field.
@@ -243,6 +291,7 @@ func mapRecord(rec map[string]any) muninn.Tender {
 			t.DateLimiteReponse = parsed
 		}
 	}
+	t.Suppliers = mapTopLevelSuppliers(rec["titulaire"])
 
 	t.AvisType = mapAvisType(rec)
 	t.Procedure = mapProcedure(rec)
@@ -277,6 +326,7 @@ func mapRecord(rec map[string]any) muninn.Tender {
 					}
 				}
 			}
+			t.Suppliers = mergeSupplierLists(t.Suppliers, mapNestedSuppliers(nested))
 		}
 	}
 

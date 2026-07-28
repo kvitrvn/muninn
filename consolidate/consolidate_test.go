@@ -141,3 +141,20 @@ func TestConsolidator_CapabilitiesIncludeSupplierSIRET(t *testing.T) {
 		t.Fatalf("mixed consolidator support = %v", got)
 	}
 }
+
+func TestConsolidator_CapabilitiesIncludeSupplierSIREN(t *testing.T) {
+	exact := stubProvider{
+		name: "decp",
+		caps: muninn.Capabilities{muninn.FilterSupplierSIREN: muninn.Exact},
+	}
+	approximate := stubProvider{
+		name: "boamp",
+		caps: muninn.Capabilities{muninn.FilterSupplierSIREN: muninn.Approximate},
+	}
+	if got := New(exact).Capabilities().Support(muninn.FilterSupplierSIREN); got != muninn.Exact {
+		t.Fatalf("exact consolidator support = %v, want Exact", got)
+	}
+	if got := New(exact, approximate).Capabilities().Support(muninn.FilterSupplierSIREN); got != muninn.Approximate {
+		t.Fatalf("mixed consolidator support = %v, want Approximate", got)
+	}
+}

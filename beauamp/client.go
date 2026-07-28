@@ -149,6 +149,7 @@ func (c *Client) Capabilities() muninn.Capabilities {
 		muninn.FilterCPV:           muninn.Exact,
 		muninn.FilterAmount:        muninn.Approximate,
 		muninn.FilterBuyerSIREN:    muninn.Exact,
+		muninn.FilterSupplierSIREN: muninn.Approximate,
 		muninn.FilterNoticeType:    muninn.Approximate,
 		muninn.FilterStatusAwarded: muninn.Approximate,
 	}
@@ -287,8 +288,8 @@ type tabularResponse struct {
 
 // fetchPage requests one page of a resource, optionally filtered by a keyword on
 // the objet column plus the advanced criteria (CPV prefix, amount range, buyer
-// SIREN). The advanced filters are pushed server-side via the tabular API's
-// per-column operators so the API returns only matching rows.
+// and supplier SIREN). The advanced filters are pushed server-side via the
+// tabular API's per-column operators so the API returns only matching rows.
 func (c *Client) fetchPage(ctx context.Context, resourceID, keyword string, size, page int, q muninn.Query) (tabularResponse, error) {
 	params := url.Values{}
 	if keyword != "" {
@@ -329,6 +330,9 @@ func (c *Client) fetchPage(ctx context.Context, resourceID, keyword string, size
 	}
 	if s := strings.TrimSpace(q.BuyerSIREN); s != "" {
 		params.Set("siren_acheteur", s)
+	}
+	if s := strings.TrimSpace(q.SupplierSIREN); s != "" {
+		params.Set("siren_fournisseur", s)
 	}
 	params.Set("page_size", strconv.Itoa(size))
 	params.Set("page", strconv.Itoa(page))

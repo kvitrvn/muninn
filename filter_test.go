@@ -43,3 +43,36 @@ func TestFilterTenders_SupplierSIRETMatchesAnySupplier(t *testing.T) {
 		}
 	}
 }
+
+func TestFilterTenders_SupplierSIRENMatchesExplicitOrDerivedIdentifier(t *testing.T) {
+	const wanted = "123456789"
+	tenders := []Tender{
+		{
+			Sources:   []SourceReference{{Provider: "test", ID: "explicit"}},
+			Suppliers: []Buyer{{SIREN: wanted}},
+		},
+		{
+			Sources:   []SourceReference{{Provider: "test", ID: "derived"}},
+			Suppliers: []Buyer{{SIRET: wanted + "00043"}},
+		},
+		{
+			Sources:   []SourceReference{{Provider: "test", ID: "co-titulaire"}},
+			Suppliers: []Buyer{{SIREN: "111111111"}, {SIRET: wanted + "00035"}},
+		},
+		{
+			Sources:   []SourceReference{{Provider: "test", ID: "different"}},
+			Suppliers: []Buyer{{SIREN: "111111111"}},
+		},
+		{Sources: []SourceReference{{Provider: "test", ID: "missing"}}},
+	}
+
+	got := FilterTenders(tenders, Query{SupplierSIREN: " " + wanted + " "}, time.Time{})
+	if len(got) != 3 {
+		t.Fatalf("FilterTenders() returned %d tenders, want 3", len(got))
+	}
+	for index, wantID := range []string{"explicit", "derived", "co-titulaire"} {
+		if got[index].Sources[0].ID != wantID {
+			t.Errorf("result %d ID = %q, want %q", index, got[index].Sources[0].ID, wantID)
+		}
+	}
+}

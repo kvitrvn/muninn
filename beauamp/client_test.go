@@ -62,6 +62,12 @@ func TestCapabilities_SupplierSIRETIsUnsupported(t *testing.T) {
 	}
 }
 
+func TestCapabilities_SupplierSIRENIsApproximate(t *testing.T) {
+	if got := New().Capabilities().Support(muninn.FilterSupplierSIREN); got != muninn.Approximate {
+		t.Fatalf("supplier SIREN support = %v, want Approximate", got)
+	}
+}
+
 // newTabularServer serves a fixed set of rows, honoring objet__contains and
 // page/page_size like the data.gouv.fr tabular API. CPV/amount/SIREN filters
 // are also applied server-side so the test mirrors the real per-column push.
@@ -74,6 +80,7 @@ func newTabularServer(t *testing.T, rows []map[string]any) *httptest.Server {
 		minAmt := q.Get("valeur_totale__gte")
 		maxAmt := q.Get("valeur_totale__lte")
 		wantSIREN := q.Get("siren_acheteur")
+		wantSupplierSIREN := q.Get("siren_fournisseur")
 
 		var matched []map[string]any
 		for _, row := range rows {
@@ -96,6 +103,9 @@ func newTabularServer(t *testing.T, rows []map[string]any) *httptest.Server {
 				}
 			}
 			if wantSIREN != "" && anyStr(row["siren_acheteur"]) != wantSIREN {
+				continue
+			}
+			if wantSupplierSIREN != "" && anyStr(row["siren_fournisseur"]) != wantSupplierSIREN {
 				continue
 			}
 			matched = append(matched, row)
@@ -181,6 +191,35 @@ func TestSearch_ORUnionAndDedup(t *testing.T) {
 	}
 	if len(got.Items) != 3 {
 		t.Fatalf("got %d tenders, want 3 distinct notices: %+v", len(got.Items), got.Items)
+	}
+}
+
+func TestSearch_SupplierSIRENIsPushedAndFiltered(t *testing.T) {
+	rows := []map[string]any{
+		{
+			"id_boamp_attribution":  "acme",
+			"objet":                 "Maintenance applicative",
+			"siren_fournisseur":     "123456789",
+			"nom_siren_fournisseur": "ACME NUMERIQUE",
+		},
+		{
+			"id_boamp_attribution": "other",
+			"objet":                "Autre maintenance",
+			"siren_fournisseur":    "428692701",
+		},
+	}
+	srv := newTabularServer(t, rows)
+	defer srv.Close()
+
+	got, err := testClient(srv.URL).Search(
+		context.Background(),
+		muninn.Query{SupplierSIREN: "123456789"},
+	)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Sources[0].ID != "acme" {
+		t.Fatalf("items = %+v, want ACME only", got.Items)
 	}
 }
 

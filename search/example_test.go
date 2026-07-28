@@ -47,3 +47,27 @@ func ExampleAdvancedFilter_supplierSIRET() {
 	fmt.Println(kept[0].Objet)
 	// Output: Marché groupé
 }
+
+func ExampleAdvancedFilter_supplierSIREN() {
+	tenders := []muninn.Tender{
+		{
+			Objet:     "Ancien établissement",
+			Suppliers: []muninn.Buyer{{SIRET: "12345678900010"}},
+		},
+		{
+			Objet:     "Nouvel établissement",
+			Suppliers: []muninn.Buyer{{SIRET: "12345678900028"}},
+		},
+		{
+			Objet:     "Autre entreprise",
+			Suppliers: []muninn.Buyer{{SIREN: "987654321"}},
+		},
+	}
+
+	kept := search.AdvancedFilter{
+		SupplierSIREN: "123456789",
+	}.Apply(tenders)
+
+	fmt.Println(len(kept))
+	// Output: 2
+}

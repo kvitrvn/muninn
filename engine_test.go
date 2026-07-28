@@ -306,6 +306,62 @@ func TestEngine_SearchRoutesSupplierSIRETToCapableProvider(t *testing.T) {
 	}
 }
 
+func TestEngine_SearchRoutesSupplierSIRENToExactAndApproximateProviders(t *testing.T) {
+	const wanted = "123456789"
+	boampSeen := make(chan Query, 1)
+	decpSeen := make(chan Query, 1)
+	unsupportedSeen := make(chan Query, 1)
+
+	boamp := engineStubProvider{
+		name: "boamp",
+		caps: Capabilities{FilterSupplierSIREN: Approximate},
+		res: ProviderResult{Items: []Tender{{
+			Sources:   []SourceReference{{Provider: "boamp", ID: "legacy"}},
+			Suppliers: []Buyer{{Nom: "ACME Numérique", SIREN: wanted}},
+		}}},
+		seen: boampSeen,
+	}
+	decp := engineStubProvider{
+		name: "decp",
+		caps: Capabilities{FilterSupplierSIREN: Exact},
+		res: ProviderResult{Items: []Tender{{
+			Sources:   []SourceReference{{Provider: "decp", ID: "current"}},
+			Suppliers: []Buyer{{SIRET: wanted + "00043"}},
+		}}},
+		seen: decpSeen,
+	}
+	unsupported := engineStubProvider{name: "other", seen: unsupportedSeen}
+
+	result, err := NewEngine(boamp, decp, unsupported).Search(
+		context.Background(),
+		Query{SupplierSIREN: wanted},
+	)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(result.Items) != 2 || !result.Partial {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(result.Warnings) != 2 {
+		t.Fatalf("warnings = %+v, want approximate and unsupported warnings", result.Warnings)
+	}
+	for name, seen := range map[string]<-chan Query{"boamp": boampSeen, "decp": decpSeen} {
+		select {
+		case query := <-seen:
+			if query.SupplierSIREN != wanted {
+				t.Errorf("%s query SupplierSIREN = %q", name, query.SupplierSIREN)
+			}
+		default:
+			t.Errorf("%s was not queried", name)
+		}
+	}
+	select {
+	case <-unsupportedSeen:
+		t.Fatal("unsupported provider was queried")
+	default:
+	}
+}
+
 func TestEngine_CursorFingerprintIncludesSupplierSIRET(t *testing.T) {
 	const firstSIRET = "49884169100039"
 	provider := engineStubProvider{
@@ -340,6 +396,49 @@ func TestEngine_CursorFingerprintIncludesSupplierSIRET(t *testing.T) {
 
 	_, err = engine.Search(context.Background(), Query{
 		SupplierSIRET: "55210055400013",
+		PageSize:      1,
+		Cursor:        first.NextCursor,
+	})
+	var validation *ValidationError
+	if !errors.As(err, &validation) || validation.Field != "Cursor" {
+		t.Fatalf("cursor mismatch error = %v", err)
+	}
+}
+
+func TestEngine_CursorFingerprintIncludesSupplierSIREN(t *testing.T) {
+	const firstSIREN = "123456789"
+	provider := engineStubProvider{
+		name: "decp",
+		caps: Capabilities{FilterSupplierSIREN: Exact},
+		res: ProviderResult{
+			Items: []Tender{
+				{
+					Sources:   []SourceReference{{Provider: "decp", ID: "1"}},
+					Suppliers: []Buyer{{SIREN: firstSIREN}},
+				},
+				{
+					Sources:   []SourceReference{{Provider: "decp", ID: "2"}},
+					Suppliers: []Buyer{{SIREN: firstSIREN}},
+				},
+			},
+			TotalExact: true,
+		},
+	}
+	engine := NewEngine(provider)
+
+	first, err := engine.Search(context.Background(), Query{
+		SupplierSIREN: firstSIREN,
+		PageSize:      1,
+	})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.NextCursor == "" {
+		t.Fatal("first page has no cursor")
+	}
+
+	_, err = engine.Search(context.Background(), Query{
+		SupplierSIREN: "428692701",
 		PageSize:      1,
 		Cursor:        first.NextCursor,
 	})

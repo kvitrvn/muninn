@@ -71,6 +71,22 @@ func TestMapRecord_NonSIRETSupplier(t *testing.T) {
 	}
 }
 
+func TestMapRecord_SIRENSupplierIsPreservedAndEnrichedBySIRET(t *testing.T) {
+	rec := map[string]any{
+		"id":                          "x",
+		"titulaire_id_1":              "123456789",
+		"titulaire_typeidentifiant_1": "SIREN",
+		"titulaire_id_2":              "12345678900010",
+		"titulaire_typeidentifiant_2": "SIRET",
+	}
+	got := mapRecord(rec)
+	if len(got.Suppliers) != 1 ||
+		got.Suppliers[0].SIREN != "123456789" ||
+		got.Suppliers[0].SIRET != "12345678900010" {
+		t.Errorf("Suppliers = %+v, want one enriched supplier", got.Suppliers)
+	}
+}
+
 func TestReadAmount(t *testing.T) {
 	if got := readAmount(1234.5); got != 1234.5 {
 		t.Errorf("float = %v", got)
@@ -104,6 +120,16 @@ func TestSupplierSIRETClause(t *testing.T) {
 	}
 	if got := supplierSIRETClause(" "); got != "" {
 		t.Errorf("empty supplierSIRETClause() = %q", got)
+	}
+}
+
+func TestSupplierSIRENClause(t *testing.T) {
+	want := `(((titulaire_typeidentifiant_1 = "SIREN" AND titulaire_id_1 = "123456789") OR (titulaire_typeidentifiant_1 = "SIRET" AND search(titulaire_id_1, "123456789"))) OR ((titulaire_typeidentifiant_2 = "SIREN" AND titulaire_id_2 = "123456789") OR (titulaire_typeidentifiant_2 = "SIRET" AND search(titulaire_id_2, "123456789"))) OR ((titulaire_typeidentifiant_3 = "SIREN" AND titulaire_id_3 = "123456789") OR (titulaire_typeidentifiant_3 = "SIRET" AND search(titulaire_id_3, "123456789"))))`
+	if got := supplierSIRENClause(" 123456789 "); got != want {
+		t.Errorf("supplierSIRENClause() = %q\nwant: %q", got, want)
+	}
+	if got := supplierSIRENClause(" "); got != "" {
+		t.Errorf("empty supplierSIRENClause() = %q", got)
 	}
 }
 
@@ -146,9 +172,46 @@ func TestSearch_FiltersSupplierSIRETServerSideAndKeepsCoTitulaire(t *testing.T) 
 	}
 }
 
+func TestSearch_FiltersSupplierSIRENServerSide(t *testing.T) {
+	const wanted = "123456789"
+	wantWhere := `(((titulaire_typeidentifiant_1 = "SIREN" AND titulaire_id_1 = "123456789") OR (titulaire_typeidentifiant_1 = "SIRET" AND search(titulaire_id_1, "123456789"))) OR ((titulaire_typeidentifiant_2 = "SIREN" AND titulaire_id_2 = "123456789") OR (titulaire_typeidentifiant_2 = "SIRET" AND search(titulaire_id_2, "123456789"))) OR ((titulaire_typeidentifiant_3 = "SIREN" AND titulaire_id_3 = "123456789") OR (titulaire_typeidentifiant_3 = "SIRET" AND search(titulaire_id_3, "123456789"))))`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("where"); got != wantWhere {
+			t.Errorf("where = %q\nwant: %q", got, wantWhere)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total_count": 1,
+			"results": []map[string]any{{
+				"id":                          "supplier-siren",
+				"titulaire_id_2":              "12345678900010",
+				"titulaire_typeidentifiant_2": "SIRET",
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	result, err := New(
+		WithBaseURL(srv.URL),
+		WithHTTPClient(http.DefaultClient),
+	).Search(context.Background(), muninn.Query{SupplierSIREN: wanted})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Suppliers[0].SIREN9() != wanted {
+		t.Fatalf("items = %+v", result.Items)
+	}
+}
+
 func TestCapabilities_SupplierSIRETIsExact(t *testing.T) {
 	if got := New().Capabilities().Support(muninn.FilterSupplierSIRET); got != muninn.Exact {
 		t.Fatalf("supplier SIRET support = %v, want Exact", got)
+	}
+}
+
+func TestCapabilities_SupplierSIRENIsExact(t *testing.T) {
+	if got := New().Capabilities().Support(muninn.FilterSupplierSIREN); got != muninn.Exact {
+		t.Fatalf("supplier SIREN support = %v, want Exact", got)
 	}
 }
 

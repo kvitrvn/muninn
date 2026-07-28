@@ -64,14 +64,15 @@ func (f Filter) matchesCPV(t muninn.Tender) bool {
 }
 
 // AdvancedFilter mirrors the advanced criteria of muninn.Query (CPV prefixes,
-// amount range, buyer SIREN, supplier SIRET). It is applied client-side after
-// a Search that could not push every filter server-side. A zero-value
+// amount range, buyer SIREN, supplier SIREN/SIRET). It is applied client-side
+// after a Search that could not push every filter server-side. A zero-value
 // AdvancedFilter is a no-op.
 type AdvancedFilter struct {
 	CPVCodes      []string
 	MontantMin    float64
 	MontantMax    float64
 	BuyerSIREN    string
+	SupplierSIREN string
 	SupplierSIRET string
 }
 
@@ -82,8 +83,9 @@ func (f AdvancedFilter) Apply(tenders []muninn.Tender) []muninn.Tender {
 	noCPV := len(f.CPVCodes) == 0
 	noAmount := f.MontantMin <= 0 && f.MontantMax <= 0
 	noBuyer := strings.TrimSpace(f.BuyerSIREN) == ""
-	noSupplier := strings.TrimSpace(f.SupplierSIRET) == ""
-	if noCPV && noAmount && noBuyer && noSupplier {
+	noSupplierSIREN := strings.TrimSpace(f.SupplierSIREN) == ""
+	noSupplierSIRET := strings.TrimSpace(f.SupplierSIRET) == ""
+	if noCPV && noAmount && noBuyer && noSupplierSIREN && noSupplierSIRET {
 		return tenders
 	}
 	out := make([]muninn.Tender, 0, len(tenders))
@@ -95,6 +97,9 @@ func (f AdvancedFilter) Apply(tenders []muninn.Tender) []muninn.Tender {
 			continue
 		}
 		if !f.matchesSIREN(t) {
+			continue
+		}
+		if !f.matchesSupplierSIREN(t) {
 			continue
 		}
 		if !f.matchesSupplierSIRET(t) {
@@ -138,6 +143,19 @@ func (f AdvancedFilter) matchesSIREN(t muninn.Tender) bool {
 		return true
 	}
 	return t.Buyer.SIREN9() == want
+}
+
+func (f AdvancedFilter) matchesSupplierSIREN(t muninn.Tender) bool {
+	want := strings.TrimSpace(f.SupplierSIREN)
+	if want == "" {
+		return true
+	}
+	for _, supplier := range t.Suppliers {
+		if supplier.SIREN9() == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (f AdvancedFilter) matchesSupplierSIRET(t muninn.Tender) bool {

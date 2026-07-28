@@ -111,9 +111,9 @@ package clients.
 
 | Package | Data source | Best suited for | Important limitations |
 | --- | --- | --- | --- |
-| `boamp` | Official BOAMP notices | Active notices, response deadlines, departments, and notice lifecycle | Amount and supplier SIRET filtering are unsupported; CPV and buyer identifiers extracted from recent eForms payloads are best effort |
-| `beauamp` | Enriched BOAMP data on data.gouv.fr | Structured buyer and supplier names, CPV codes, and indicative amounts | Supplier SIRET, department, and deadline filters are unsupported; full text, publication dates, amounts, notice types, and award status are approximate |
-| `decp` | Essential public procurement data (DECP) | Published awarded contracts, all supplier SIRETs, and reference amounts | Contains awards rather than active notices; department, deadline, open, and closed filters are unsupported |
+| `boamp` | Official BOAMP notices | Active notices, response deadlines, departments, and historical award notices | Supplier SIREN matching is approximate because legacy winners are identified by name; amount and supplier SIRET filtering are unsupported |
+| `beauamp` | Enriched BOAMP data on data.gouv.fr | Structured buyer and supplier names/SIRENs, CPV codes, and indicative amounts | Supplier SIRET, department, and deadline filters are unsupported; supplier identity and other enriched fields remain indicative |
+| `decp` | Essential public procurement data (DECP) | Published awarded contracts, exact supplier SIRENs/SIRETs, and reference amounts | Contains awards rather than active notices; department, deadline, open, and closed filters are unsupported |
 
 The engine inspects each provider's `Capabilities` before searching:
 
@@ -143,6 +143,7 @@ with OR, except when `MatchAll` requires every keyword.
 | `CPVCodes` | CPV prefixes |
 | `MontantMin`, `MontantMax` | Known contract amount range in euros |
 | `BuyerSIREN` | Exact nine-digit buyer SIREN |
+| `SupplierSIREN` | Nine-digit legal-entity SIREN of any awarded supplier, across its establishments |
 | `SupplierSIRET` | Exact 14-digit SIRET of any awarded supplier |
 | `NoticeTypes` | Competition, award, or correction notices |
 | `Statuses` | Open, closed, or awarded tenders |
@@ -158,7 +159,7 @@ network call:
 ```go
 query := muninn.Query{
 	BuyerSIREN:    "200055703",
-	SupplierSIRET: "49884169100039",
+	SupplierSIREN: "123456789",
 	MontantMin:    50_000,
 	MontantMax:    250_000,
 	PageSize:      50,
@@ -251,9 +252,12 @@ Use `Tender.ProviderNames` for display and `Tender.Sources` when you need the
 native identifier, source URL, or raw source fields.
 
 Awarded contractors are exposed through `Tender.Suppliers`. DECP preserves the
-native titulaire order, ignores non-SIRET identifier schemes, and removes
-duplicate SIRETs. Consolidation keeps distinct establishments while using their
-common SIREN to relate records across sources.
+native titulaire order, accepts SIREN and SIRET identifiers, ignores unrelated
+identifier schemes, and removes duplicates. BOAMP maps both legacy result
+notices and eForms winners; when a legacy notice only contains a company name,
+`SupplierSIREN` resolves official company names and reports approximate support.
+Consolidation keeps distinct establishments while using their common SIREN to
+relate records across sources.
 
 > Migration note: `Tender.Supplier Buyer` was replaced by
 > `Tender.Suppliers []Buyer`. Callers must iterate the list instead of reading a
@@ -365,7 +369,9 @@ Provider implementations should:
 ## Known limitations
 
 - BOAMP is authoritative, but some fields extracted from recent eForms payloads
-  remain best effort.
+  remain best effort. Historical supplier-SIREN searches also depend on the
+  official company-search API and name matching, so the engine emits an
+  approximate-filter warning.
 - BEAUAMP data is indicative and its tabular API only supports a subset of the
   source data and filters.
 - DECP contains awarded contracts, not the complete active-notice lifecycle.

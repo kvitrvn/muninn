@@ -50,6 +50,7 @@ func TestAdvancedFilter_Apply(t *testing.T) {
 		{"amount range", AdvancedFilter{MontantMin: 100000, MontantMax: 1000000}, []string{"2"}},
 		{"buyer SIREN exact", AdvancedFilter{BuyerSIREN: "111111111"}, []string{"1", "3"}},
 		{"buyer SIREN derived from SIRET", AdvancedFilter{BuyerSIREN: "999999999"}, []string{"4"}},
+		{"supplier SIREN derived from SIRET", AdvancedFilter{SupplierSIREN: "498841691"}, []string{"2", "3"}},
 		{"supplier SIRET exact on any member", AdvancedFilter{SupplierSIRET: " 49884169100039 "}, []string{"2", "3"}},
 		{"combined", AdvancedFilter{CPVCodes: []string{"72"}, MontantMin: 100000, BuyerSIREN: "111111111"}, []string{"3"}},
 	}

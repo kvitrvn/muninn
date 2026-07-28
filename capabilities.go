@@ -17,6 +17,7 @@ const (
 	FilterCPV           Filter = "cpv"
 	FilterAmount        Filter = "amount"
 	FilterBuyerSIREN    Filter = "buyer_siren"
+	FilterSupplierSIREN Filter = "supplier_siren"
 	FilterSupplierSIRET Filter = "supplier_siret"
 	FilterNoticeType    Filter = "notice_type"
 	FilterStatusOpen    Filter = "status_open"
@@ -88,6 +89,9 @@ func (q Query) requiredFilters() []Filter {
 	}
 	if q.BuyerSIREN != "" {
 		out = append(out, FilterBuyerSIREN)
+	}
+	if strings.TrimSpace(q.SupplierSIREN) != "" {
+		out = append(out, FilterSupplierSIREN)
 	}
 	if strings.TrimSpace(q.SupplierSIRET) != "" {
 		out = append(out, FilterSupplierSIRET)

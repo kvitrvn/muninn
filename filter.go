@@ -40,6 +40,9 @@ func matchesTender(t Tender, q Query, at time.Time) bool {
 	if q.BuyerSIREN != "" && t.Buyer.SIREN9() != strings.TrimSpace(q.BuyerSIREN) {
 		return false
 	}
+	if !matchesSupplierSIREN(t.Suppliers, q.SupplierSIREN) {
+		return false
+	}
 	if !matchesSupplierSIRET(t.Suppliers, q.SupplierSIRET) {
 		return false
 	}
@@ -50,6 +53,19 @@ func matchesTender(t Tender, q Query, at time.Time) bool {
 		return false
 	}
 	return true
+}
+
+func matchesSupplierSIREN(suppliers []Buyer, value string) bool {
+	want := strings.TrimSpace(value)
+	if want == "" {
+		return true
+	}
+	for _, supplier := range suppliers {
+		if supplier.SIREN9() == want {
+			return true
+		}
+	}
+	return false
 }
 
 func matchesSupplierSIRET(suppliers []Buyer, value string) bool {

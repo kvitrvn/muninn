@@ -82,3 +82,34 @@ func TestQuery_ValidateSupplierSIRET(t *testing.T) {
 		})
 	}
 }
+
+func TestQuery_ValidateSupplierSIREN(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "empty", value: ""},
+		{name: "whitespace", value: "   "},
+		{name: "exact 9 digits", value: "123456789"},
+		{name: "trimmed exact 9 digits", value: " 123456789 "},
+		{name: "too short", value: "12345678", wantErr: true},
+		{name: "too long", value: "1234567890", wantErr: true},
+		{name: "non digit", value: "12345678A", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := (Query{SupplierSIREN: test.value}).Validate()
+			if !test.wantErr {
+				if err != nil {
+					t.Fatalf("Validate() = %v", err)
+				}
+				return
+			}
+			var validation *ValidationError
+			if !errors.As(err, &validation) || validation.Field != "SupplierSIREN" {
+				t.Fatalf("Validate() = %v, want SupplierSIREN validation error", err)
+			}
+		})
+	}
+}

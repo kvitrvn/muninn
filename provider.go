@@ -30,6 +30,10 @@ type Query struct {
 	MontantMin float64
 	MontantMax float64
 	BuyerSIREN string
+	// SupplierSIREN matches any awarded contractor (titulaire) by its stable
+	// 9-digit legal-entity identifier, including establishments with another
+	// SIRET.
+	SupplierSIREN string
 	// SupplierSIRET matches one awarded contractor (titulaire) by its exact
 	// 14-digit establishment identifier.
 	SupplierSIRET string
@@ -73,6 +77,9 @@ func (q Query) Validate() error {
 
 	if s := strings.TrimSpace(q.BuyerSIREN); s != "" && !isDigits(s, 9) {
 		return &ValidationError{Field: "BuyerSIREN", Problem: "must contain exactly 9 digits"}
+	}
+	if s := strings.TrimSpace(q.SupplierSIREN); s != "" && !isDigits(s, 9) {
+		return &ValidationError{Field: "SupplierSIREN", Problem: "must contain exactly 9 digits"}
 	}
 	if s := strings.TrimSpace(q.SupplierSIRET); s != "" && !isDigits(s, 14) {
 		return &ValidationError{Field: "SupplierSIRET", Problem: "must contain exactly 14 digits"}

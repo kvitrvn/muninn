@@ -93,6 +93,7 @@ func (c *Client) Capabilities() muninn.Capabilities {
 		muninn.FilterCPV:           muninn.Exact,
 		muninn.FilterAmount:        muninn.Exact,
 		muninn.FilterBuyerSIREN:    muninn.Exact,
+		muninn.FilterSupplierSIREN: muninn.Exact,
 		muninn.FilterSupplierSIRET: muninn.Exact,
 		muninn.FilterNoticeType:    muninn.Exact,
 		muninn.FilterStatusAwarded: muninn.Exact,
@@ -129,7 +130,7 @@ func (c *Client) Search(ctx context.Context, q muninn.Query) (muninn.ProviderRes
 }
 
 // buildWhere combines the keyword clause with a notification-date bound and
-// the advanced filters (CPV, amount, buyer SIREN, supplier SIRET) when set.
+// the advanced filters (CPV, amount, buyer and supplier identifiers) when set.
 // DECP exposes all of these as native columns, so they are pushed server-side.
 // DECP has no dedicated SIREN column; the buyer id is a SIRET, so the SIREN
 // filter matches the first 9 digits of that SIRET (a SIRET is SIREN + NIC).
@@ -152,8 +153,31 @@ func buildWhere(q muninn.Query) string {
 		ods.CPVClause(q, "codecpv"),
 		ods.AmountClause(q, "montant"),
 		siren,
+		supplierSIRENClause(q.SupplierSIREN),
 		supplierSIRETClause(q.SupplierSIRET),
 	)
+}
+
+func supplierSIRENClause(value string) string {
+	siren := strings.TrimSpace(value)
+	if siren == "" {
+		return ""
+	}
+	escaped := ods.Escape(siren)
+	parts := make([]string, 0, 3)
+	for slot := 1; slot <= 3; slot++ {
+		parts = append(parts, fmt.Sprintf(
+			`((titulaire_typeidentifiant_%d = "SIREN" AND titulaire_id_%d = "%s") OR `+
+				`(titulaire_typeidentifiant_%d = "SIRET" AND search(titulaire_id_%d, "%s")))`,
+			slot,
+			slot,
+			escaped,
+			slot,
+			slot,
+			escaped,
+		))
+	}
+	return "(" + strings.Join(parts, " OR ") + ")"
 }
 
 func supplierSIRETClause(value string) string {
@@ -208,22 +232,46 @@ func mapRecord(rec map[string]any) muninn.Tender {
 
 func mapSuppliers(rec map[string]any) []muninn.Buyer {
 	suppliers := make([]muninn.Buyer, 0, 3)
-	seen := map[string]bool{}
 	for slot := 1; slot <= 3; slot++ {
 		typeKey := fmt.Sprintf("titulaire_typeidentifiant_%d", slot)
-		if typ, _ := rec[typeKey].(string); !strings.EqualFold(strings.TrimSpace(typ), "SIRET") {
-			continue
-		}
+		typ, _ := rec[typeKey].(string)
+		typ = strings.ToUpper(strings.TrimSpace(typ))
 		idKey := fmt.Sprintf("titulaire_id_%d", slot)
-		siret, _ := rec[idKey].(string)
-		siret = strings.TrimSpace(siret)
-		if siret == "" || seen[siret] {
+		identifier, _ := rec[idKey].(string)
+		identifier = strings.TrimSpace(identifier)
+		if identifier == "" {
 			continue
 		}
-		seen[siret] = true
-		suppliers = append(suppliers, muninn.Buyer{SIRET: siret})
+		var supplier muninn.Buyer
+		switch typ {
+		case "SIRET":
+			supplier.SIRET = identifier
+		case "SIREN":
+			supplier.SIREN = identifier
+		default:
+			continue
+		}
+		suppliers = appendDECPProvider(suppliers, supplier)
 	}
 	return suppliers
+}
+
+func appendDECPProvider(suppliers []muninn.Buyer, supplier muninn.Buyer) []muninn.Buyer {
+	for index := range suppliers {
+		sameSIRET := supplier.SIRET != "" && suppliers[index].SIRET == supplier.SIRET
+		sameSIREN := supplier.SIREN9() != "" && suppliers[index].SIREN9() == supplier.SIREN9()
+		if !sameSIRET && !sameSIREN {
+			continue
+		}
+		if suppliers[index].SIRET == "" {
+			suppliers[index].SIRET = supplier.SIRET
+		}
+		if suppliers[index].SIREN == "" {
+			suppliers[index].SIREN = supplier.SIREN
+		}
+		return suppliers
+	}
+	return append(suppliers, supplier)
 }
 
 // readAmount reads the "montant" field, tolerating both a JSON number and a

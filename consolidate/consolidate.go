@@ -41,6 +41,7 @@ func (c *Consolidator) Capabilities() muninn.Capabilities {
 		muninn.FilterCPV,
 		muninn.FilterAmount,
 		muninn.FilterBuyerSIREN,
+		muninn.FilterSupplierSIREN,
 		muninn.FilterSupplierSIRET,
 		muninn.FilterNoticeType,
 		muninn.FilterStatusOpen,
