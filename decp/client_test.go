@@ -107,7 +107,7 @@ func TestBuildWhere_AdvancedFilters(t *testing.T) {
 		BuyerSIREN:    "210500237",
 		SupplierSIRET: "49884169100039",
 	})
-	want := `(codecpv starts with "72" OR codecpv starts with "3019") AND (montant >= 40000 AND montant <= 500000) AND acheteur_id starts with "210500237" AND ((titulaire_typeidentifiant_1 = "SIRET" AND titulaire_id_1 = "49884169100039") OR (titulaire_typeidentifiant_2 = "SIRET" AND titulaire_id_2 = "49884169100039") OR (titulaire_typeidentifiant_3 = "SIRET" AND titulaire_id_3 = "49884169100039"))`
+	want := `(codecpv starts with "72" OR codecpv starts with "3019") AND (montant >= 40000 AND montant <= 500000) AND search(acheteur_id, "210500237") AND ((titulaire_typeidentifiant_1 = "SIRET" AND titulaire_id_1 = "49884169100039") OR (titulaire_typeidentifiant_2 = "SIRET" AND titulaire_id_2 = "49884169100039") OR (titulaire_typeidentifiant_3 = "SIRET" AND titulaire_id_3 = "49884169100039"))`
 	if got != want {
 		t.Errorf("buildWhere() = %q\nwant: %q", got, want)
 	}
@@ -120,6 +120,15 @@ func TestSupplierSIRETClause(t *testing.T) {
 	}
 	if got := supplierSIRETClause(" "); got != "" {
 		t.Errorf("empty supplierSIRETClause() = %q", got)
+	}
+}
+
+func TestBuyerSIRENClause(t *testing.T) {
+	if got := buyerSIRENClause(" 123456789 "); got != `search(acheteur_id, "123456789")` {
+		t.Errorf("buyerSIRENClause() = %q", got)
+	}
+	if got := buyerSIRENClause(" "); got != "" {
+		t.Errorf("empty buyerSIRENClause() = %q", got)
 	}
 }
 
@@ -169,6 +178,38 @@ func TestSearch_FiltersSupplierSIRETServerSideAndKeepsCoTitulaire(t *testing.T) 
 	if len(result.Items[0].Suppliers) != 2 ||
 		result.Items[0].Suppliers[1].SIRET != wanted {
 		t.Errorf("suppliers = %+v", result.Items[0].Suppliers)
+	}
+}
+
+func TestSearch_FiltersBuyerSIRENWithValidODSQLAndExactPostFilter(t *testing.T) {
+	const wanted = "123456789"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("where"); got != `search(acheteur_id, "123456789")` {
+			t.Errorf("where = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total_count": 2,
+			"results": []map[string]any{
+				{"id": "exact-prefix", "acheteur_id": "12345678900010"},
+				{"id": "substring-only", "acheteur_id": "99912345678999"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	result, err := New(
+		WithBaseURL(srv.URL),
+		WithHTTPClient(http.DefaultClient),
+	).Search(context.Background(), muninn.Query{BuyerSIREN: wanted})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Sources[0].ID != "exact-prefix" {
+		t.Fatalf("items = %+v, want exact SIREN prefix only", result.Items)
+	}
+	if result.Total != 1 || !result.TotalExact {
+		t.Errorf("metadata = %+v, want exact filtered total", result)
 	}
 }
 

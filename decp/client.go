@@ -118,7 +118,10 @@ func (c *Client) Search(ctx context.Context, q muninn.Query) (muninn.ProviderRes
 		at = time.Now()
 	}
 	result.Items = muninn.FilterTenders(result.Items, q, at)
-	if len(q.NoticeTypes) > 0 || len(q.Statuses) > 0 {
+	if strings.TrimSpace(q.BuyerSIREN) != "" ||
+		strings.TrimSpace(q.SupplierSIREN) != "" ||
+		len(q.NoticeTypes) > 0 ||
+		len(q.Statuses) > 0 {
 		if !result.Truncated {
 			result.Total = len(result.Items)
 			result.TotalExact = true
@@ -143,19 +146,23 @@ func buildWhere(q muninn.Query) string {
 	if !q.PublishedTo.IsZero() {
 		date = append(date, fmt.Sprintf(`datenotification <= "%s"`, q.PublishedTo.Format("2006-01-02")))
 	}
-	var siren string
-	if s := strings.TrimSpace(q.BuyerSIREN); s != "" {
-		siren = fmt.Sprintf(`acheteur_id starts with "%s"`, ods.Escape(s))
-	}
 	return ods.And(
 		ods.KeywordClause(q),
 		strings.Join(date, " AND "),
 		ods.CPVClause(q, "codecpv"),
 		ods.AmountClause(q, "montant"),
-		siren,
+		buyerSIRENClause(q.BuyerSIREN),
 		supplierSIRENClause(q.SupplierSIREN),
 		supplierSIRETClause(q.SupplierSIRET),
 	)
+}
+
+func buyerSIRENClause(value string) string {
+	siren := strings.TrimSpace(value)
+	if siren == "" {
+		return ""
+	}
+	return fmt.Sprintf(`search(acheteur_id, "%s")`, ods.Escape(siren))
 }
 
 func supplierSIRENClause(value string) string {
