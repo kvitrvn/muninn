@@ -58,6 +58,13 @@ func TestTender_StatusAt(t *testing.T) {
 			want:   StatusAwarded,
 		},
 		{
+			name: "known supplier means awarded",
+			tender: Tender{
+				Suppliers: []Buyer{{SIRET: "49884169100039"}},
+			},
+			want: StatusAwarded,
+		},
+		{
 			name:   "missing deadline is unknown",
 			tender: Tender{AvisType: AvisAppelConcurrence},
 			want:   StatusUnknown,

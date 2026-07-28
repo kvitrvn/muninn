@@ -93,6 +93,7 @@ func (c *Client) Capabilities() muninn.Capabilities {
 		muninn.FilterCPV:           muninn.Exact,
 		muninn.FilterAmount:        muninn.Exact,
 		muninn.FilterBuyerSIREN:    muninn.Exact,
+		muninn.FilterSupplierSIRET: muninn.Exact,
 		muninn.FilterNoticeType:    muninn.Exact,
 		muninn.FilterStatusAwarded: muninn.Exact,
 	}
@@ -128,11 +129,11 @@ func (c *Client) Search(ctx context.Context, q muninn.Query) (muninn.ProviderRes
 }
 
 // buildWhere combines the keyword clause with a notification-date bound and
-// the advanced filters (CPV, amount, buyer SIREN) when set. DECP exposes all
-// of these as native columns, so they are pushed server-side. DECP has no
-// dedicated SIREN column; the buyer id is a SIRET, so the SIREN filter matches
-// the first 9 digits of that SIRET (a SIRET is SIREN + NIC). DECP has no
-// simple department field, so q.Departements is ignored here.
+// the advanced filters (CPV, amount, buyer SIREN, supplier SIRET) when set.
+// DECP exposes all of these as native columns, so they are pushed server-side.
+// DECP has no dedicated SIREN column; the buyer id is a SIRET, so the SIREN
+// filter matches the first 9 digits of that SIRET (a SIRET is SIREN + NIC).
+// DECP has no simple department field, so q.Departements is ignored here.
 func buildWhere(q muninn.Query) string {
 	var date []string
 	if !q.PublishedFrom.IsZero() {
@@ -151,7 +152,26 @@ func buildWhere(q muninn.Query) string {
 		ods.CPVClause(q, "codecpv"),
 		ods.AmountClause(q, "montant"),
 		siren,
+		supplierSIRETClause(q.SupplierSIRET),
 	)
+}
+
+func supplierSIRETClause(value string) string {
+	siret := strings.TrimSpace(value)
+	if siret == "" {
+		return ""
+	}
+	escaped := ods.Escape(siret)
+	parts := make([]string, 0, 3)
+	for slot := 1; slot <= 3; slot++ {
+		parts = append(parts, fmt.Sprintf(
+			`(titulaire_typeidentifiant_%d = "SIRET" AND titulaire_id_%d = "%s")`,
+			slot,
+			slot,
+			escaped,
+		))
+	}
+	return "(" + strings.Join(parts, " OR ") + ")"
 }
 
 // mapRecord translates a raw DECP record into a muninn.Tender. Every DECP record
@@ -175,13 +195,7 @@ func mapRecord(rec map[string]any) muninn.Tender {
 	if v, ok := rec["acheteur_id"].(string); ok {
 		t.Buyer.SIRET = v
 	}
-	// The winning contractor: the first titulaire slot, only when identified by
-	// SIRET (some records use non-SIRET schemes like "CDL").
-	if typ, _ := rec["titulaire_typeidentifiant_1"].(string); typ == "SIRET" {
-		if v, ok := rec["titulaire_id_1"].(string); ok {
-			t.Supplier.SIRET = v
-		}
-	}
+	t.Suppliers = mapSuppliers(rec)
 	t.MontantEstime = readAmount(rec["montant"])
 	if v, ok := rec["datenotification"].(string); ok {
 		if parsed, err := ods.ParseDate(v); err == nil {
@@ -190,6 +204,26 @@ func mapRecord(rec map[string]any) muninn.Tender {
 	}
 	t.Procedure = mapProcedure(rec)
 	return t
+}
+
+func mapSuppliers(rec map[string]any) []muninn.Buyer {
+	suppliers := make([]muninn.Buyer, 0, 3)
+	seen := map[string]bool{}
+	for slot := 1; slot <= 3; slot++ {
+		typeKey := fmt.Sprintf("titulaire_typeidentifiant_%d", slot)
+		if typ, _ := rec[typeKey].(string); !strings.EqualFold(strings.TrimSpace(typ), "SIRET") {
+			continue
+		}
+		idKey := fmt.Sprintf("titulaire_id_%d", slot)
+		siret, _ := rec[idKey].(string)
+		siret = strings.TrimSpace(siret)
+		if siret == "" || seen[siret] {
+			continue
+		}
+		seen[siret] = true
+		suppliers = append(suppliers, muninn.Buyer{SIRET: siret})
+	}
+	return suppliers
 }
 
 // readAmount reads the "montant" field, tolerating both a JSON number and a

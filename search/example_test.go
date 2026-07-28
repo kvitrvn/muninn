@@ -24,3 +24,26 @@ func ExampleFilter() {
 	fmt.Println(len(kept))
 	// Output: 1
 }
+
+func ExampleAdvancedFilter_supplierSIRET() {
+	tenders := []muninn.Tender{
+		{
+			Objet: "Marché groupé",
+			Suppliers: []muninn.Buyer{
+				{SIRET: "11111111100011"},
+				{SIRET: "49884169100039"},
+			},
+		},
+		{
+			Objet:     "Autre marché",
+			Suppliers: []muninn.Buyer{{SIRET: "22222222200022"}},
+		},
+	}
+
+	kept := search.AdvancedFilter{
+		SupplierSIRET: "49884169100039",
+	}.Apply(tenders)
+
+	fmt.Println(kept[0].Objet)
+	// Output: Marché groupé
+}

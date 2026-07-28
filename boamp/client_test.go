@@ -63,6 +63,12 @@ func TestMapRecord_ContractNotice(t *testing.T) {
 	}
 }
 
+func TestCapabilities_SupplierSIRETIsUnsupported(t *testing.T) {
+	if got := New().Capabilities().Support(muninn.FilterSupplierSIRET); got != muninn.Unsupported {
+		t.Fatalf("supplier SIRET support = %v, want Unsupported", got)
+	}
+}
+
 func TestMapRecord_FrameworkAgreement(t *testing.T) {
 	rec := map[string]any{
 		"idweb":       "23-999999",

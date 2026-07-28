@@ -42,8 +42,8 @@ func TestMapRecord(t *testing.T) {
 	if got.Buyer.SIREN != "267500452" || got.Buyer.Nom != "AP-HP" {
 		t.Errorf("Buyer = %+v", got.Buyer)
 	}
-	if got.Supplier.SIREN != "428692701" || got.Supplier.Nom != "ENNOV" {
-		t.Errorf("Supplier = %+v", got.Supplier)
+	if len(got.Suppliers) != 1 || got.Suppliers[0].SIREN != "428692701" || got.Suppliers[0].Nom != "ENNOV" {
+		t.Errorf("Suppliers = %+v", got.Suppliers)
 	}
 	if got.MontantEstime != 840136 {
 		t.Errorf("MontantEstime = %v", got.MontantEstime)
@@ -53,6 +53,12 @@ func TestMapRecord(t *testing.T) {
 	}
 	if got.DatePublication.Format("2006-01-02") != "2026-06-03" {
 		t.Errorf("DatePublication = %v", got.DatePublication)
+	}
+}
+
+func TestCapabilities_SupplierSIRETIsUnsupported(t *testing.T) {
+	if got := New().Capabilities().Support(muninn.FilterSupplierSIRET); got != muninn.Unsupported {
+		t.Fatalf("supplier SIRET support = %v, want Unsupported", got)
 	}
 }
 

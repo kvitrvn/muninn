@@ -2,6 +2,7 @@ package consolidate
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -19,16 +20,19 @@ func TestMerge_EnrichesOnlyStrongCrossSourceMatch(t *testing.T) {
 		Objet:           "Solution GED",
 		CPVCodes:        []string{"72000000"},
 		Buyer:           muninn.Buyer{Nom: "Ville X", SIREN: "200000001"},
-		Supplier:        muninn.Buyer{Nom: "ENNOV", SIREN: "428692701"},
+		Suppliers:       []muninn.Buyer{{Nom: "ENNOV", SIREN: "428692701"}},
 		MontantEstime:   800000,
 		DatePublication: published,
 	}
 	award := muninn.Tender{
-		Sources:         source("decp", "d-1"),
-		Objet:           "solution GED",
-		CPVCodes:        []string{"72000000-9"},
-		Buyer:           muninn.Buyer{SIRET: "20000000100015"},
-		Supplier:        muninn.Buyer{SIRET: "42869270100010"},
+		Sources:  source("decp", "d-1"),
+		Objet:    "solution GED",
+		CPVCodes: []string{"72000000-9"},
+		Buyer:    muninn.Buyer{SIRET: "20000000100015"},
+		Suppliers: []muninn.Buyer{
+			{SIRET: "11111111100011"},
+			{SIRET: "42869270100010"},
+		},
 		MontantEstime:   754853,
 		AvisType:        muninn.AvisAttribution,
 		DatePublication: published.Add(24 * time.Hour),
@@ -47,6 +51,19 @@ func TestMerge_EnrichesOnlyStrongCrossSourceMatch(t *testing.T) {
 	}
 	if len(merged.Sources) != 2 {
 		t.Errorf("sources = %+v", merged.Sources)
+	}
+	if len(merged.Suppliers) != 2 {
+		t.Fatalf("suppliers = %+v, want two distinct SIRETs", merged.Suppliers)
+	}
+	if merged.Suppliers[0].SIRET != "11111111100011" {
+		t.Errorf("first supplier = %+v", merged.Suppliers[0])
+	}
+	if merged.Suppliers[1].SIRET != "42869270100010" || merged.Suppliers[1].Nom != "ENNOV" {
+		t.Errorf("second supplier = %+v, want enriched ENNOV SIRET", merged.Suppliers[1])
+	}
+	reversed := Merge([]muninn.Tender{award, beau})
+	if len(reversed) != 1 || !reflect.DeepEqual(reversed[0].Suppliers, merged.Suppliers) {
+		t.Errorf("reversed suppliers = %+v, want %+v", reversed, merged.Suppliers)
 	}
 }
 
@@ -107,5 +124,20 @@ func TestConsolidator_Search(t *testing.T) {
 	}
 	if len(got.Items) != 2 || !got.TotalExact {
 		t.Fatalf("result = %+v", got)
+	}
+}
+
+func TestConsolidator_CapabilitiesIncludeSupplierSIRET(t *testing.T) {
+	exact := stubProvider{
+		name: "decp",
+		caps: muninn.Capabilities{muninn.FilterSupplierSIRET: muninn.Exact},
+	}
+	if got := New(exact).Capabilities().Support(muninn.FilterSupplierSIRET); got != muninn.Exact {
+		t.Fatalf("exact consolidator support = %v", got)
+	}
+
+	unsupported := stubProvider{name: "boamp"}
+	if got := New(exact, unsupported).Capabilities().Support(muninn.FilterSupplierSIRET); got != muninn.Unsupported {
+		t.Fatalf("mixed consolidator support = %v", got)
 	}
 }

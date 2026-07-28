@@ -26,6 +26,7 @@ func MergeTenders(tenders []Tender) []Tender {
 
 	for _, tender := range tenders {
 		tender.Sources = normalizedSources(tender.Sources)
+		tender.Suppliers = normalizedSuppliers(tender.Suppliers)
 
 		target := -1
 		for _, key := range recordKeys(tender) {
@@ -64,6 +65,7 @@ func MergeTenders(tenders []Tender) []Tender {
 	out := make([]Tender, 0, len(groups))
 	for _, group := range groups {
 		group.merged.Sources = normalizedSources(group.merged.Sources)
+		group.merged.Suppliers = normalizedSuppliers(group.merged.Suppliers)
 		out = append(out, group.merged)
 	}
 	return out
@@ -136,9 +138,15 @@ func cpvOverlap(a, b []string) bool {
 }
 
 func hasCrossSourceEvidence(a, b Tender) bool {
-	aSupplier, bSupplier := a.Supplier.SIREN9(), b.Supplier.SIREN9()
-	if aSupplier != "" && bSupplier != "" {
-		return aSupplier == bSupplier
+	aSuppliers := supplierSIRENs(a.Suppliers)
+	bSuppliers := supplierSIRENs(b.Suppliers)
+	if len(aSuppliers) > 0 && len(bSuppliers) > 0 {
+		for siren := range aSuppliers {
+			if bSuppliers[siren] {
+				return true
+			}
+		}
+		return false
 	}
 	for _, aSource := range a.Sources {
 		if aSource.ID == "" {
@@ -164,7 +172,7 @@ func enrichTender(a, b Tender) Tender {
 	}
 
 	a.Buyer = mergeBuyer(a.Buyer, b.Buyer)
-	a.Supplier = mergeBuyer(a.Supplier, b.Supplier)
+	a.Suppliers = mergeSuppliers(a.Suppliers, b.Suppliers)
 	if a.Titre == "" {
 		a.Titre = b.Titre
 	}
@@ -210,6 +218,97 @@ func mergeBuyer(a, b Buyer) Buyer {
 		a.CodeDepartement = b.CodeDepartement
 	}
 	return a
+}
+
+func mergeSuppliers(a, b []Buyer) []Buyer {
+	combined := make([]Buyer, 0, len(a)+len(b))
+	combined = append(combined, a...)
+	combined = append(combined, b...)
+	return normalizedSuppliers(combined)
+}
+
+func normalizedSuppliers(suppliers []Buyer) []Buyer {
+	candidates := make([]Buyer, 0, len(suppliers))
+	for _, supplier := range suppliers {
+		supplier.SIRET = strings.TrimSpace(supplier.SIRET)
+		supplier.SIREN = strings.TrimSpace(supplier.SIREN)
+		if !isZeroBuyer(supplier) {
+			candidates = append(candidates, supplier)
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return supplierSortKey(candidates[i]) < supplierSortKey(candidates[j])
+	})
+
+	merged := make([]Buyer, 0, len(candidates))
+	bySIRET := map[string]int{}
+	sirenOnly := map[string]Buyer{}
+	anonymous := map[string]bool{}
+	for _, supplier := range candidates {
+		if supplier.SIRET != "" {
+			if index, ok := bySIRET[supplier.SIRET]; ok {
+				merged[index] = mergeBuyer(merged[index], supplier)
+				continue
+			}
+			bySIRET[supplier.SIRET] = len(merged)
+			merged = append(merged, supplier)
+			continue
+		}
+		if siren := supplier.SIREN9(); siren != "" {
+			sirenOnly[siren] = mergeBuyer(sirenOnly[siren], supplier)
+			continue
+		}
+		key := supplierSortKey(supplier)
+		if !anonymous[key] {
+			anonymous[key] = true
+			merged = append(merged, supplier)
+		}
+	}
+
+	sirens := make([]string, 0, len(sirenOnly))
+	for siren := range sirenOnly {
+		sirens = append(sirens, siren)
+	}
+	sort.Strings(sirens)
+	for _, siren := range sirens {
+		details := sirenOnly[siren]
+		matched := false
+		for index := range merged {
+			if merged[index].SIRET != "" && merged[index].SIREN9() == siren {
+				merged[index] = mergeBuyer(merged[index], details)
+				matched = true
+			}
+		}
+		if !matched {
+			merged = append(merged, details)
+		}
+	}
+
+	sort.SliceStable(merged, func(i, j int) bool {
+		return supplierSortKey(merged[i]) < supplierSortKey(merged[j])
+	})
+	return merged
+}
+
+func supplierSIRENs(suppliers []Buyer) map[string]bool {
+	sirens := map[string]bool{}
+	for _, supplier := range suppliers {
+		if siren := supplier.SIREN9(); siren != "" {
+			sirens[siren] = true
+		}
+	}
+	return sirens
+}
+
+func supplierSortKey(supplier Buyer) string {
+	return strings.Join([]string{
+		supplier.SIREN9(),
+		supplier.SIRET,
+		supplier.SIREN,
+		supplier.Nom,
+		supplier.Ville,
+		supplier.CodeDepartement,
+	}, "|")
 }
 
 func unionStrings(a, b []string) []string {

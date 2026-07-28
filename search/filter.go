@@ -64,21 +64,26 @@ func (f Filter) matchesCPV(t muninn.Tender) bool {
 }
 
 // AdvancedFilter mirrors the advanced criteria of muninn.Query (CPV prefixes,
-// amount range, buyer SIREN). It is applied client-side after a Search that
-// could not push every filter server-side. A zero-value AdvancedFilter is a
-// no-op.
+// amount range, buyer SIREN, supplier SIRET). It is applied client-side after
+// a Search that could not push every filter server-side. A zero-value
+// AdvancedFilter is a no-op.
 type AdvancedFilter struct {
-	CPVCodes   []string
-	MontantMin float64
-	MontantMax float64
-	BuyerSIREN string
+	CPVCodes      []string
+	MontantMin    float64
+	MontantMax    float64
+	BuyerSIREN    string
+	SupplierSIRET string
 }
 
 // Apply returns the tenders satisfying every populated criterion. Empty
 // criteria are skipped, so a partially populated filter only narrows on the
 // axes that are set.
 func (f AdvancedFilter) Apply(tenders []muninn.Tender) []muninn.Tender {
-	if len(f.CPVCodes) == 0 && f.MontantMin <= 0 && f.MontantMax <= 0 && strings.TrimSpace(f.BuyerSIREN) == "" {
+	noCPV := len(f.CPVCodes) == 0
+	noAmount := f.MontantMin <= 0 && f.MontantMax <= 0
+	noBuyer := strings.TrimSpace(f.BuyerSIREN) == ""
+	noSupplier := strings.TrimSpace(f.SupplierSIRET) == ""
+	if noCPV && noAmount && noBuyer && noSupplier {
 		return tenders
 	}
 	out := make([]muninn.Tender, 0, len(tenders))
@@ -90,6 +95,9 @@ func (f AdvancedFilter) Apply(tenders []muninn.Tender) []muninn.Tender {
 			continue
 		}
 		if !f.matchesSIREN(t) {
+			continue
+		}
+		if !f.matchesSupplierSIRET(t) {
 			continue
 		}
 		out = append(out, t)
@@ -130,4 +138,17 @@ func (f AdvancedFilter) matchesSIREN(t muninn.Tender) bool {
 		return true
 	}
 	return t.Buyer.SIREN9() == want
+}
+
+func (f AdvancedFilter) matchesSupplierSIRET(t muninn.Tender) bool {
+	want := strings.TrimSpace(f.SupplierSIRET)
+	if want == "" {
+		return true
+	}
+	for _, supplier := range t.Suppliers {
+		if strings.TrimSpace(supplier.SIRET) == want {
+			return true
+		}
+	}
+	return false
 }

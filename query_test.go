@@ -51,3 +51,34 @@ func TestValidateProviderQuery_RejectsEnginePagination(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestQuery_ValidateSupplierSIRET(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "empty", value: ""},
+		{name: "whitespace", value: "   "},
+		{name: "exact 14 digits", value: "49884169100039"},
+		{name: "trimmed exact 14 digits", value: " 49884169100039 "},
+		{name: "too short", value: "4988416910003", wantErr: true},
+		{name: "too long", value: "498841691000390", wantErr: true},
+		{name: "non digit", value: "4988416910003A", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := (Query{SupplierSIRET: test.value}).Validate()
+			if !test.wantErr {
+				if err != nil {
+					t.Fatalf("Validate() = %v", err)
+				}
+				return
+			}
+			var validation *ValidationError
+			if !errors.As(err, &validation) || validation.Field != "SupplierSIRET" {
+				t.Fatalf("Validate() = %v, want SupplierSIRET validation error", err)
+			}
+		})
+	}
+}

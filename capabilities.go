@@ -1,6 +1,9 @@
 package muninn
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Filter identifies one independently supportable query feature.
 type Filter string
@@ -14,6 +17,7 @@ const (
 	FilterCPV           Filter = "cpv"
 	FilterAmount        Filter = "amount"
 	FilterBuyerSIREN    Filter = "buyer_siren"
+	FilterSupplierSIRET Filter = "supplier_siret"
 	FilterNoticeType    Filter = "notice_type"
 	FilterStatusOpen    Filter = "status_open"
 	FilterStatusClosed  Filter = "status_closed"
@@ -84,6 +88,9 @@ func (q Query) requiredFilters() []Filter {
 	}
 	if q.BuyerSIREN != "" {
 		out = append(out, FilterBuyerSIREN)
+	}
+	if strings.TrimSpace(q.SupplierSIRET) != "" {
+		out = append(out, FilterSupplierSIRET)
 	}
 	if len(q.NoticeTypes) > 0 {
 		out = append(out, FilterNoticeType)

@@ -113,8 +113,8 @@ func (s TenderStatus) String() string {
 	}
 }
 
-// Buyer represents an economic actor of a tender: either the public buyer or,
-// when used as Tender.Supplier, the awarded contractor (titulaire).
+// Buyer represents an economic actor of a tender: either the public buyer or
+// one of the awarded contractors (titulaires) in Tender.Suppliers.
 type Buyer struct {
 	Nom             string
 	SIRET           string
@@ -156,10 +156,10 @@ type Tender struct {
 	CPVCodes []string
 	Buyer    Buyer
 
-	// Supplier is the awarded contractor (titulaire) when the notice is an award
-	// result. Its zero value means the contract is not yet awarded or the winner
-	// is unknown for this source (notices from the tendering phase have none).
-	Supplier Buyer
+	// Suppliers are the awarded contractors (titulaires) when the notice is an
+	// award result. An empty list means the contract is not yet awarded or the
+	// winners are unknown for this source.
+	Suppliers []Buyer
 
 	AvisType   AvisType
 	Procedure  ProcedureType
@@ -197,7 +197,7 @@ func (t Tender) DedupKey() string {
 // StatusAt derives the lifecycle status at at. Deadlines are compared at day
 // granularity because several public datasets expose no response time.
 func (t Tender) StatusAt(at time.Time) TenderStatus {
-	if t.AvisType == AvisAttribution || !isZeroBuyer(t.Supplier) {
+	if t.AvisType == AvisAttribution || hasKnownSupplier(t.Suppliers) {
 		return StatusAwarded
 	}
 	if t.AvisType != AvisAppelConcurrence && t.AvisType != AvisRectificatif {
@@ -288,6 +288,15 @@ func firstNonEmpty(values ...string) string {
 
 func isZeroBuyer(b Buyer) bool {
 	return b.Nom == "" && b.SIRET == "" && b.SIREN == "" && b.Ville == "" && b.CodeDepartement == ""
+}
+
+func hasKnownSupplier(suppliers []Buyer) bool {
+	for _, supplier := range suppliers {
+		if !isZeroBuyer(supplier) {
+			return true
+		}
+	}
+	return false
 }
 
 func dateOnly(value time.Time) time.Time {

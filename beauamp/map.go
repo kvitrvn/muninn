@@ -29,10 +29,13 @@ func mapRecord(rec map[string]any) muninn.Tender {
 		SIREN: str(rec["siren_acheteur"]),
 		Ville: str(rec["nom_commune_acheteur"]),
 	}
-	t.Supplier = muninn.Buyer{
+	supplier := muninn.Buyer{
 		Nom:   firstString(rec, "nom_declare_fournisseur", "nom_siren_fournisseur"),
 		SIREN: str(rec["siren_fournisseur"]),
 		Ville: str(rec["nom_commune_fournisseur"]),
+	}
+	if supplier.Nom != "" || supplier.SIREN != "" || supplier.Ville != "" {
+		t.Suppliers = []muninn.Buyer{supplier}
 	}
 
 	// Amount: BEAUAMP spreads it across several columns depending on the contract

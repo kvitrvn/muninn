@@ -251,3 +251,100 @@ func TestEngine_SearchFailsWhenNoProviderSupportsQuery(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 }
+
+func TestEngine_SearchRoutesSupplierSIRETToCapableProvider(t *testing.T) {
+	const wanted = "49884169100039"
+	unsupportedSeen := make(chan Query, 1)
+	supportedSeen := make(chan Query, 1)
+	unsupported := engineStubProvider{
+		name: "boamp",
+		seen: unsupportedSeen,
+	}
+	supported := engineStubProvider{
+		name: "decp",
+		caps: Capabilities{FilterSupplierSIRET: Exact},
+		res: ProviderResult{
+			Items: []Tender{{
+				Sources: []SourceReference{{Provider: "decp", ID: "1"}},
+				Suppliers: []Buyer{
+					{SIRET: "11111111100011"},
+					{SIRET: wanted},
+				},
+			}},
+			TotalExact: true,
+		},
+		seen: supportedSeen,
+	}
+
+	result, err := NewEngine(unsupported, supported).Search(
+		context.Background(),
+		Query{SupplierSIRET: wanted},
+	)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(result.Items) != 1 || !result.Partial {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(result.Warnings) != 1 ||
+		result.Warnings[0].Provider != "boamp" ||
+		result.Warnings[0].Code != WarningUnsupportedFilter {
+		t.Fatalf("warnings = %+v", result.Warnings)
+	}
+	select {
+	case query := <-supportedSeen:
+		if query.SupplierSIRET != wanted {
+			t.Errorf("DECP query SupplierSIRET = %q", query.SupplierSIRET)
+		}
+	default:
+		t.Fatal("capable provider was not queried")
+	}
+	select {
+	case <-unsupportedSeen:
+		t.Fatal("unsupported provider was queried")
+	default:
+	}
+}
+
+func TestEngine_CursorFingerprintIncludesSupplierSIRET(t *testing.T) {
+	const firstSIRET = "49884169100039"
+	provider := engineStubProvider{
+		name: "decp",
+		caps: Capabilities{FilterSupplierSIRET: Exact},
+		res: ProviderResult{
+			Items: []Tender{
+				{
+					Sources:   []SourceReference{{Provider: "decp", ID: "1"}},
+					Suppliers: []Buyer{{SIRET: firstSIRET}},
+				},
+				{
+					Sources:   []SourceReference{{Provider: "decp", ID: "2"}},
+					Suppliers: []Buyer{{SIRET: firstSIRET}},
+				},
+			},
+			TotalExact: true,
+		},
+	}
+	engine := NewEngine(provider)
+
+	first, err := engine.Search(context.Background(), Query{
+		SupplierSIRET: firstSIRET,
+		PageSize:      1,
+	})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.NextCursor == "" {
+		t.Fatal("first page has no cursor")
+	}
+
+	_, err = engine.Search(context.Background(), Query{
+		SupplierSIRET: "55210055400013",
+		PageSize:      1,
+		Cursor:        first.NextCursor,
+	})
+	var validation *ValidationError
+	if !errors.As(err, &validation) || validation.Field != "Cursor" {
+		t.Fatalf("cursor mismatch error = %v", err)
+	}
+}

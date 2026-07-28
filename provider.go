@@ -30,6 +30,9 @@ type Query struct {
 	MontantMin float64
 	MontantMax float64
 	BuyerSIREN string
+	// SupplierSIRET matches one awarded contractor (titulaire) by its exact
+	// 14-digit establishment identifier.
+	SupplierSIRET string
 
 	NoticeTypes []AvisType
 	Statuses    []TenderStatus
@@ -70,6 +73,9 @@ func (q Query) Validate() error {
 
 	if s := strings.TrimSpace(q.BuyerSIREN); s != "" && !isDigits(s, 9) {
 		return &ValidationError{Field: "BuyerSIREN", Problem: "must contain exactly 9 digits"}
+	}
+	if s := strings.TrimSpace(q.SupplierSIRET); s != "" && !isDigits(s, 14) {
+		return &ValidationError{Field: "SupplierSIRET", Problem: "must contain exactly 14 digits"}
 	}
 	for _, typ := range q.NoticeTypes {
 		if typ <= AvisInconnu || typ > AvisRectificatif {

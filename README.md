@@ -14,6 +14,7 @@ database, run a server, or impose a cache.
 
 - Federated search across BOAMP, BEAUAMP, and DECP
 - One normalized `Tender` model for notices and awarded contracts
+- Exact DECP filtering across all awarded suppliers by SIRET
 - Capability-aware routing for exact, approximate, and unsupported filters
 - Concurrent provider calls with partial-result reporting
 - Conservative cross-source consolidation with raw source provenance
@@ -110,9 +111,9 @@ package clients.
 
 | Package | Data source | Best suited for | Important limitations |
 | --- | --- | --- | --- |
-| `boamp` | Official BOAMP notices | Active notices, response deadlines, departments, and notice lifecycle | Amount filtering is unsupported; CPV and buyer identifiers extracted from recent eForms payloads are best effort |
-| `beauamp` | Enriched BOAMP data on data.gouv.fr | Structured buyer and supplier names, CPV codes, and indicative amounts | Full text, publication dates, amounts, notice types, and award status are approximate; department and deadline filters are unsupported |
-| `decp` | Essential public procurement data (DECP) | Published awarded contracts, suppliers, and reference amounts | Contains awards rather than active notices; department, deadline, open, and closed filters are unsupported |
+| `boamp` | Official BOAMP notices | Active notices, response deadlines, departments, and notice lifecycle | Amount and supplier SIRET filtering are unsupported; CPV and buyer identifiers extracted from recent eForms payloads are best effort |
+| `beauamp` | Enriched BOAMP data on data.gouv.fr | Structured buyer and supplier names, CPV codes, and indicative amounts | Supplier SIRET, department, and deadline filters are unsupported; full text, publication dates, amounts, notice types, and award status are approximate |
+| `decp` | Essential public procurement data (DECP) | Published awarded contracts, all supplier SIRETs, and reference amounts | Contains awards rather than active notices; department, deadline, open, and closed filters are unsupported |
 
 The engine inspects each provider's `Capabilities` before searching:
 
@@ -142,6 +143,7 @@ with OR, except when `MatchAll` requires every keyword.
 | `CPVCodes` | CPV prefixes |
 | `MontantMin`, `MontantMax` | Known contract amount range in euros |
 | `BuyerSIREN` | Exact nine-digit buyer SIREN |
+| `SupplierSIRET` | Exact 14-digit SIRET of any awarded supplier |
 | `NoticeTypes` | Competition, award, or correction notices |
 | `Statuses` | Open, closed, or awarded tenders |
 | `OpenAt` | Time used to derive open and closed status; zero means now |
@@ -155,10 +157,11 @@ network call:
 
 ```go
 query := muninn.Query{
-	BuyerSIREN: "200055703",
-	MontantMin: 50_000,
-	MontantMax: 250_000,
-	PageSize:   50,
+	BuyerSIREN:    "200055703",
+	SupplierSIRET: "49884169100039",
+	MontantMin:    50_000,
+	MontantMax:    250_000,
+	PageSize:      50,
 }
 
 if err := query.Validate(); err != nil {
@@ -246,6 +249,15 @@ type SourceReference struct {
 
 Use `Tender.ProviderNames` for display and `Tender.Sources` when you need the
 native identifier, source URL, or raw source fields.
+
+Awarded contractors are exposed through `Tender.Suppliers`. DECP preserves the
+native titulaire order, ignores non-SIRET identifier schemes, and removes
+duplicate SIRETs. Consolidation keeps distinct establishments while using their
+common SIREN to relate records across sources.
+
+> Migration note: `Tender.Supplier Buyer` was replaced by
+> `Tender.Suppliers []Buyer`. Callers must iterate the list instead of reading a
+> single awarded contractor.
 
 Muninn merges records only when there is strong cross-source evidence. When
 evidence is incomplete, it keeps separate tenders rather than risk a false
