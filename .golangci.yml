@@ -1,0 +1,21 @@
+version: "2"
+
+linters:
+  # govet, staticcheck, errcheck, ineffassign and unused are enabled by default in v2.
+  enable:
+    - revive
+  # misspell is intentionally omitted: this library carries French domain
+  # vocabulary and BOAMP/DECP/BEAUAMP field names (e.g. nature_categorise_libelle,
+  # "attribue", "decembre"), which a US-English spell checker flags as errors.
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # godoc examples favor readability (panic on error).
+      - linters:
+          - errcheck
+        path: example_test\.go

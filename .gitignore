@@ -1,0 +1,16 @@
+# Binaires compilés
+/example
+/muninn
+*.exe
+*.out
+*.test
+
+# Couverture / profils
+coverage.out
+*.prof
+
+# Artefacts d'éditeur / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
