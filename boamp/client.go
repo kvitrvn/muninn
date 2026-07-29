@@ -437,29 +437,105 @@ func mapEngagementFromNested(nested map[string]any) muninn.EngagementType {
 	return muninn.EngagementInconnu
 }
 
-// extractCPV reads OBJET.CPV.PRINCIPAL (single-lot) and, when present, the
-// per-lot CPV codes under OBJET.LOT[].CPV.PRINCIPAL (multi-lot contracts).
+// extractCPV reads both BOAMP's legacy OBJET.CPV structure and the UBL/eForms
+// commodity classifications used by recent notices. Both formats collapse
+// singleton XML elements to objects and repeated elements to arrays, so each
+// repeatable level accepts either shape.
 func extractCPV(nested map[string]any) []string {
 	var codes []string
-	if cpv := digDict(nested, "OBJET", "CPV"); cpv != nil {
-		if principal, ok := cpv["PRINCIPAL"].(string); ok && principal != "" {
-			codes = append(codes, principal)
+	seen := map[string]bool{}
+
+	if objet, ok := digLocal(nested, "OBJET").(map[string]any); ok {
+		codes = appendLegacyCPV(codes, seen, digLocal(objet, "CPV"))
+
+		// Some older payloads expose LOT directly, while the observed BOAMP
+		// shape is OBJET.LOTS.LOT. Keep both for backwards compatibility.
+		codes = appendLegacyLotCPV(codes, seen, digLocal(objet, "LOT"))
+		for _, lots := range objectRecords(digLocal(objet, "LOTS")) {
+			codes = appendLegacyLotCPV(codes, seen, digLocal(lots, "LOT"))
 		}
 	}
-	if lots, ok := digAny(nested, "OBJET", "LOT").([]any); ok {
-		for _, lot := range lots {
-			lotMap, ok := lot.(map[string]any)
-			if !ok {
-				continue
-			}
-			if cpv, ok := lotMap["CPV"].(map[string]any); ok {
-				if principal, ok := cpv["PRINCIPAL"].(string); ok && principal != "" {
-					codes = append(codes, principal)
+
+	if eforms, ok := digLocal(nested, "EFORMS").(map[string]any); ok {
+		for _, documentValue := range eforms {
+			for _, document := range objectRecords(documentValue) {
+				codes = appendEFormsProjectCPV(codes, seen, digLocal(document, "ProcurementProject"))
+				for _, lot := range objectRecords(digLocal(document, "ProcurementProjectLot")) {
+					codes = appendEFormsProjectCPV(codes, seen, digLocal(lot, "ProcurementProject"))
 				}
 			}
 		}
 	}
+
 	return codes
+}
+
+func appendLegacyLotCPV(codes []string, seen map[string]bool, value any) []string {
+	for _, lot := range objectRecords(value) {
+		codes = appendLegacyCPV(codes, seen, digLocal(lot, "CPV"))
+	}
+	return codes
+}
+
+func appendLegacyCPV(codes []string, seen map[string]bool, value any) []string {
+	if code, ok := value.(string); ok {
+		return appendCPVCode(codes, seen, code)
+	}
+	for _, cpv := range objectRecords(value) {
+		codes = appendCPVValue(codes, seen, digLocal(cpv, "PRINCIPAL"))
+	}
+	return codes
+}
+
+func appendEFormsProjectCPV(codes []string, seen map[string]bool, value any) []string {
+	for _, project := range objectRecords(value) {
+		for _, classification := range objectRecords(digLocal(project, "MainCommodityClassification")) {
+			codes = appendEFormsCPVValue(codes, seen, digLocal(classification, "ItemClassificationCode"))
+		}
+		for _, classification := range objectRecords(digLocal(project, "AdditionalCommodityClassification")) {
+			codes = appendEFormsCPVValue(codes, seen, digLocal(classification, "ItemClassificationCode"))
+		}
+	}
+	return codes
+}
+
+func appendEFormsCPVValue(codes []string, seen map[string]bool, value any) []string {
+	switch typed := value.(type) {
+	case []any:
+		for _, item := range typed {
+			codes = appendEFormsCPVValue(codes, seen, item)
+		}
+	case map[string]any:
+		if listName, _ := typed["@listName"].(string); listName != "" &&
+			!strings.EqualFold(strings.TrimSpace(listName), "cpv") {
+			return codes
+		}
+		codes = appendCPVCode(codes, seen, textValue(typed))
+	case string:
+		codes = appendCPVCode(codes, seen, typed)
+	}
+	return codes
+}
+
+func appendCPVValue(codes []string, seen map[string]bool, value any) []string {
+	switch typed := value.(type) {
+	case []any:
+		for _, item := range typed {
+			codes = appendCPVValue(codes, seen, item)
+		}
+	default:
+		codes = appendCPVCode(codes, seen, textValue(typed))
+	}
+	return codes
+}
+
+func appendCPVCode(codes []string, seen map[string]bool, code string) []string {
+	code = strings.TrimSpace(code)
+	if code == "" || seen[code] {
+		return codes
+	}
+	seen[code] = true
+	return append(codes, code)
 }
 
 // digDict walks a chain of nested keys and returns the last level if it is a

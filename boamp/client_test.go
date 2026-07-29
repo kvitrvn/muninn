@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ const fixtureRecord = `{
 	"donnees": "{\"OBJET\":{\"PROCEDURE\":{\"TYPE_PROCEDURE\":{\"OUVERT\":\"\"}},\"CPV\":{\"PRINCIPAL\":\"72000000\"}}}"
 }`
 
-func TestMapRecord_ContractNotice(t *testing.T) {
+func TestMapRecord_LegacyContractNotice(t *testing.T) {
 	var rec map[string]any
 	if err := json.Unmarshal([]byte(fixtureRecord), &rec); err != nil {
 		t.Fatalf("fixture invalide: %v", err)
@@ -61,6 +62,145 @@ func TestMapRecord_ContractNotice(t *testing.T) {
 	if got.DateLimiteReponse.Format("2006-01-02") != "2026-08-15" {
 		t.Errorf("DateLimiteReponse = %v", got.DateLimiteReponse)
 	}
+}
+
+func TestMapRecord_EFormsCPV_26_58589(t *testing.T) {
+	rec := map[string]any{
+		"idweb": "26-58589",
+		"donnees": `{
+			"EFORMS": {
+				"ContractNotice": {
+					"cac:ProcurementProject": {
+						"cac:MainCommodityClassification": {
+							"cbc:ItemClassificationCode": {
+								"@listName": "cpv",
+								"#text": "64120000"
+							}
+						}
+					},
+					"cac:ProcurementProjectLot": {
+						"cac:ProcurementProject": {
+							"cac:MainCommodityClassification": {
+								"cbc:ItemClassificationCode": {
+									"@listName": "cpv",
+									"#text": "64120000"
+								}
+							},
+							"cac:AdditionalCommodityClassification": {
+								"cbc:ItemClassificationCode": {
+									"@listName": "cpv",
+									"#text": "48613000"
+								}
+							}
+						}
+					}
+				}
+			}
+		}`,
+	}
+
+	got := mapRecord(rec)
+	want := []string{"64120000", "48613000"}
+	if !slices.Equal(got.CPVCodes, want) {
+		t.Fatalf("CPVCodes = %v, want %v", got.CPVCodes, want)
+	}
+}
+
+func TestExtractCPV_EFormsAwardMultiLot(t *testing.T) {
+	nested := decodeNestedFixture(t, `{
+		"EFORMS": {
+			"ContractAwardNotice": {
+				"cac:ProcurementProject": {
+					"cac:MainCommodityClassification": [
+						{
+							"cbc:ItemClassificationCode": {
+								"@listName": "other-classification",
+								"#text": "not-a-cpv"
+							}
+						},
+						{
+							"cbc:ItemClassificationCode": {
+								"@listName": "cpv",
+								"#text": "45214200"
+							}
+						}
+					]
+				},
+				"cac:ProcurementProjectLot": [
+					{
+						"cac:ProcurementProject": {
+							"cac:MainCommodityClassification": {
+								"cbc:ItemClassificationCode": {
+									"@listName": "cpv",
+									"#text": "45214200"
+								}
+							},
+							"cac:AdditionalCommodityClassification": {
+								"cbc:ItemClassificationCode": {
+									"@listName": "cpv",
+									"#text": "45112500"
+								}
+							}
+						}
+					},
+					{
+						"cac:ProcurementProject": {
+							"cac:AdditionalCommodityClassification": [
+								{"cbc:ItemClassificationCode": "44220000"},
+								{
+									"cbc:ItemClassificationCode": {
+										"@listName": "cpv",
+										"#text": "45112500"
+									}
+								}
+							]
+						}
+					}
+				]
+			}
+		}
+	}`)
+
+	got := extractCPV(nested)
+	want := []string{"45214200", "45112500", "44220000"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("extractCPV() = %v, want %v", got, want)
+	}
+}
+
+func TestExtractCPV_LegacyLotShapes(t *testing.T) {
+	nested := decodeNestedFixture(t, `{
+		"OBJET": {
+			"CPV": {"PRINCIPAL": "71000000"},
+			"LOT": {"CPV": {"PRINCIPAL": "71100000"}},
+			"LOTS": {
+				"LOT": [
+					{"CPV": {"PRINCIPAL": "71200000"}},
+					{
+						"CPV": [
+							{"PRINCIPAL": "71300000"},
+							{"PRINCIPAL": "71000000"}
+						]
+					}
+				]
+			}
+		}
+	}`)
+
+	got := extractCPV(nested)
+	want := []string{"71000000", "71100000", "71200000", "71300000"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("extractCPV() = %v, want %v", got, want)
+	}
+}
+
+func decodeNestedFixture(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var nested map[string]any
+	if err := json.Unmarshal([]byte(raw), &nested); err != nil {
+		t.Fatalf("decode nested fixture: %v", err)
+	}
+	return nested
 }
 
 func TestCapabilities_SupplierSIRETIsUnsupported(t *testing.T) {

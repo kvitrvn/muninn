@@ -194,6 +194,48 @@ func TestSearch_ORUnionAndDedup(t *testing.T) {
 	}
 }
 
+func TestSearch_MergesCPVsAndSuppliersFromDuplicateRows(t *testing.T) {
+	rows := []map[string]any{
+		{
+			"id_boamp_attribution":    "26-53454",
+			"objet":                   "Services d'impression",
+			"cpv":                     "79820000",
+			"siren_fournisseur":       "111111111",
+			"nom_declare_fournisseur": "IMPRIMERIE A",
+		},
+		{
+			"id_boamp_attribution":    "26-53454",
+			"objet":                   "Services d'impression",
+			"cpv":                     "79824000",
+			"siren_fournisseur":       "222222222",
+			"nom_declare_fournisseur": "IMPRIMERIE B",
+		},
+	}
+	srv := newTabularServer(t, rows)
+	defer srv.Close()
+
+	got, err := testClient(srv.URL).Search(context.Background(), muninn.Query{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got.Items) != 1 {
+		t.Fatalf("got %d tenders, want one merged notice: %+v", len(got.Items), got.Items)
+	}
+
+	tender := got.Items[0]
+	if len(tender.CPVCodes) != 2 || tender.CPVCodes[0] != "79820000" || tender.CPVCodes[1] != "79824000" {
+		t.Errorf("CPVCodes = %v, want [79820000 79824000]", tender.CPVCodes)
+	}
+	if len(tender.Suppliers) != 2 ||
+		tender.Suppliers[0].SIREN != "111111111" ||
+		tender.Suppliers[1].SIREN != "222222222" {
+		t.Errorf("Suppliers = %+v, want both suppliers", tender.Suppliers)
+	}
+	if got.Total != 1 || !got.TotalExact || got.Truncated {
+		t.Errorf("metadata = %+v, want one exact merged result", got)
+	}
+}
+
 func TestSearch_SupplierSIRENIsPushedAndFiltered(t *testing.T) {
 	rows := []map[string]any{
 		{

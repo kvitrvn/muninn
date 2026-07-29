@@ -187,10 +187,10 @@ func (c *Client) Search(ctx context.Context, q muninn.Query) (muninn.ProviderRes
 	}
 
 	var (
-		out       []muninn.Tender
-		seen      = map[string]bool{}
-		rawTotal  int
-		truncated bool
+		out        []muninn.Tender
+		indexByKey = map[string]int{}
+		rawTotal   int
+		truncated  bool
 	)
 resourcesLoop:
 	for _, res := range resources {
@@ -217,10 +217,11 @@ resourcesLoop:
 						continue
 					}
 					key := t.DedupKey()
-					if seen[key] {
+					if index, exists := indexByKey[key]; exists {
+						out[index] = muninn.MergeTenders([]muninn.Tender{out[index], t})[0]
 						continue
 					}
-					seen[key] = true
+					indexByKey[key] = len(out)
 					out = append(out, t)
 					if len(out) >= limit {
 						truncated = true
