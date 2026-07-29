@@ -79,8 +79,8 @@ func newTabularServer(t *testing.T, rows []map[string]any) *httptest.Server {
 		wantCPV := q.Get("cpv__startswith")
 		minAmt := q.Get("valeur_totale__gte")
 		maxAmt := q.Get("valeur_totale__lte")
-		wantSIREN := q.Get("siren_acheteur")
-		wantSupplierSIREN := q.Get("siren_fournisseur")
+		wantSIREN := q.Get("siren_acheteur__exact")
+		wantSupplierSIREN := q.Get("siren_fournisseur__exact")
 
 		var matched []map[string]any
 		for _, row := range rows {
@@ -220,6 +220,36 @@ func TestSearch_SupplierSIRENIsPushedAndFiltered(t *testing.T) {
 	}
 	if len(got.Items) != 1 || got.Items[0].Sources[0].ID != "acme" {
 		t.Fatalf("items = %+v, want ACME only", got.Items)
+	}
+}
+
+func TestSearch_SIRENFiltersUseExactOperator(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Has("siren_acheteur") || q.Has("siren_fournisseur") {
+			t.Errorf("query contains unsupported bare SIREN filters: %s", r.URL.RawQuery)
+		}
+		if got := q.Get("siren_acheteur__exact"); got != "267500452" {
+			t.Errorf("siren_acheteur__exact = %q, want 267500452", got)
+		}
+		if got := q.Get("siren_fournisseur__exact"); got != "428692701" {
+			t.Errorf("siren_fournisseur__exact = %q, want 428692701", got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{},
+			"meta": map[string]any{"page": 1, "page_size": 100, "total": 0},
+		})
+	}))
+	defer srv.Close()
+
+	_, err := testClient(srv.URL).Search(context.Background(), muninn.Query{
+		BuyerSIREN:    " 267500452 ",
+		SupplierSIREN: " 428692701 ",
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
 	}
 }
 

@@ -329,10 +329,10 @@ func (c *Client) fetchPage(ctx context.Context, resourceID, keyword string, size
 		params.Set("valeur_totale__lte", strconv.FormatFloat(q.MontantMax, 'f', -1, 64))
 	}
 	if s := strings.TrimSpace(q.BuyerSIREN); s != "" {
-		params.Set("siren_acheteur", s)
+		params.Set("siren_acheteur__exact", s)
 	}
 	if s := strings.TrimSpace(q.SupplierSIREN); s != "" {
-		params.Set("siren_fournisseur", s)
+		params.Set("siren_fournisseur__exact", s)
 	}
 	params.Set("page_size", strconv.Itoa(size))
 	params.Set("page", strconv.Itoa(page))
