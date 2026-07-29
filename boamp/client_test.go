@@ -106,6 +106,50 @@ func TestMapRecord_EFormsCPV_26_58589(t *testing.T) {
 	}
 }
 
+func TestMapRecord_FNSimpleCPV_26_74350(t *testing.T) {
+	rec := map[string]any{
+		"idweb": "26-74350",
+		"donnees": `{
+			"FNSimple": {
+				"initial": {
+					"identifiantProcedure": "12345678",
+					"natureMarche": {
+						"codeCPV": {
+							"objetPrincipal": {
+								"classPrincipale": "38112100"
+							}
+						}
+					},
+					"lots": {
+						"lot": [
+							{
+								"codeCPV": {
+									"objetPrincipal": {
+										"classPrincipale": "38112100"
+									}
+								}
+							},
+							{
+								"codeCPV": {
+									"objetPrincipal": {
+										"classPrincipale": "38000000"
+									}
+								}
+							}
+						]
+					}
+				}
+			}
+		}`,
+	}
+
+	got := mapRecord(rec)
+	want := []string{"38112100", "38000000"}
+	if !slices.Equal(got.CPVCodes, want) {
+		t.Fatalf("CPVCodes = %v, want %v", got.CPVCodes, want)
+	}
+}
+
 func TestExtractCPV_EFormsAwardMultiLot(t *testing.T) {
 	nested := decodeNestedFixture(t, `{
 		"EFORMS": {
@@ -378,9 +422,9 @@ func TestBuildWhereWithSupplierNamesCombinesCriteria(t *testing.T) {
 // Opendatasoft plumbing in internal/ods; here we only cover the BOAMP-specific
 // record mapping and where-clause building.
 
-// TestSearch_AdvancedFiltersPostFetch verifies the CPV / amount / SIREN filters
-// are applied client-side after the API paginates, since BOAMP exposes none of
-// them as a top-level column.
+// TestSearch_AdvancedFiltersPostFetch verifies that the approximate BOAMP
+// candidate query is followed by exact client-side CPV / amount / SIREN
+// filtering.
 func TestSearch_AdvancedFiltersPostFetch(t *testing.T) {
 	rows := []map[string]any{
 		{
@@ -620,18 +664,25 @@ func TestSearch_RetriesTransientServerError(t *testing.T) {
 	}
 }
 
-func TestBuildWhere_AdvancedFiltersIgnoredAtWhereLevel(t *testing.T) {
-	// BOAMP cannot push CPV/amount/SIREN as a server-side where clause: they
-	// live in the nested "donnees" blob. The where clause is unchanged when
-	// those filters are set.
+func TestBuildWhere_CPVPrefilteredOtherAdvancedFiltersRemainClientSide(t *testing.T) {
+	// BOAMP can narrow CPVs through full-text search on the nested donnees blob.
+	// Amount and buyer SIREN remain exact client-side filters.
 	got := buildWhere(muninn.Query{
 		Keywords:   []string{"GED"},
 		CPVCodes:   []string{"72"},
 		MontantMin: 100000,
 		BuyerSIREN: "111111111",
 	})
-	want := `("GED")`
+	want := `("GED") AND search(donnees, "72")`
 	if got != want {
-		t.Errorf("buildWhere() = %q, want %q (advanced filters stay client-side)", got, want)
+		t.Errorf("buildWhere() = %q, want %q", got, want)
+	}
+}
+
+func TestCPVSearchClause_MultiplePrefixes(t *testing.T) {
+	got := cpvSearchClause([]string{" 38112100 ", "", "38295000"})
+	want := `(search(donnees, "38112100") OR search(donnees, "38295000"))`
+	if got != want {
+		t.Errorf("cpvSearchClause() = %q, want %q", got, want)
 	}
 }

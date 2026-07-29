@@ -6,13 +6,9 @@
 // nature_categorise_libelle, donnees, url_avis) are confirmed against the live
 // dataset schema (see FetchSchema).
 //
-// Caveat: the eForms (UBL) format is mandatory for every BOAMP notice since
-// 2024-01-31. The parsing of the nested "donnees" field below
-// (mapProcedureFromNested, mapEngagementFromNested, extractCPV) follows the
-// older pre-eForms structure and is best-effort: for a recent notice the real
-// shape of "donnees" is likely different (UBL/eForms vocabulary). The
-// procedure/engagement mapping should be validated against a real recent
-// record before being relied upon in production.
+// The nested "donnees" field has several observed shapes: legacy BOAMP,
+// FNSimple and UBL/eForms. CPV extraction covers all three, while procedure and
+// engagement mapping remain best-effort because those vocabularies can evolve.
 package boamp
 
 import (
@@ -193,10 +189,31 @@ func buildWhere(q muninn.Query) string {
 func buildWhereWithSupplierNames(q muninn.Query, supplierNames []string) string {
 	return ods.And(
 		ods.KeywordClause(q),
+		cpvSearchClause(q.CPVCodes),
 		supplierIdentityClause(q.SupplierSIREN, supplierNames),
 		deptClause(q),
 		dateClause(q),
 	)
+}
+
+// cpvSearchClause narrows BOAMP's JSON-stringified donnees field before the
+// exact client-side CPV prefix filter runs. ODS search() is intentionally only
+// a candidate selector: it is fuzzy, while AdvancedFilter remains authoritative.
+func cpvSearchClause(prefixes []string) string {
+	var parts []string
+	for _, prefix := range prefixes {
+		if prefix = strings.TrimSpace(prefix); prefix != "" {
+			parts = append(parts, fmt.Sprintf(`search(donnees, "%s")`, ods.Escape(prefix)))
+		}
+	}
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	default:
+		return "(" + strings.Join(parts, " OR ") + ")"
+	}
 }
 
 // deptClause filters on the confirmed top-level code_departement field.
@@ -437,10 +454,10 @@ func mapEngagementFromNested(nested map[string]any) muninn.EngagementType {
 	return muninn.EngagementInconnu
 }
 
-// extractCPV reads both BOAMP's legacy OBJET.CPV structure and the UBL/eForms
-// commodity classifications used by recent notices. Both formats collapse
-// singleton XML elements to objects and repeated elements to arrays, so each
-// repeatable level accepts either shape.
+// extractCPV reads BOAMP's legacy OBJET.CPV structure, FNSimple codeCPV
+// sections and the UBL/eForms commodity classifications used by recent
+// notices. These formats collapse singleton XML elements to objects and
+// repeated elements to arrays, so each repeatable level accepts either shape.
 func extractCPV(nested map[string]any) []string {
 	var codes []string
 	seen := map[string]bool{}
@@ -456,6 +473,10 @@ func extractCPV(nested map[string]any) []string {
 		}
 	}
 
+	if fns := digLocal(nested, "FNSimple"); fns != nil {
+		codes = appendFNSCPV(codes, seen, fns)
+	}
+
 	if eforms, ok := digLocal(nested, "EFORMS").(map[string]any); ok {
 		for _, documentValue := range eforms {
 			for _, document := range objectRecords(documentValue) {
@@ -468,6 +489,58 @@ func extractCPV(nested map[string]any) []string {
 	}
 
 	return codes
+}
+
+// appendFNSCPV walks initial, rectificatif and attribution FNS documents,
+// including their lots, and only interprets values nested below codeCPV as CPV
+// candidates. This avoids treating unrelated eight-digit identifiers as CPVs.
+func appendFNSCPV(codes []string, seen map[string]bool, value any) []string {
+	switch typed := value.(type) {
+	case []any:
+		for _, item := range typed {
+			codes = appendFNSCPV(codes, seen, item)
+		}
+	case map[string]any:
+		for key, item := range typed {
+			if strings.EqualFold(localName(key), "codeCPV") {
+				codes = appendFNSCPVValues(codes, seen, item)
+				continue
+			}
+			codes = appendFNSCPV(codes, seen, item)
+		}
+	}
+	return codes
+}
+
+func appendFNSCPVValues(codes []string, seen map[string]bool, value any) []string {
+	switch typed := value.(type) {
+	case string:
+		if isCPVCode(typed) {
+			codes = appendCPVCode(codes, seen, typed)
+		}
+	case []any:
+		for _, item := range typed {
+			codes = appendFNSCPVValues(codes, seen, item)
+		}
+	case map[string]any:
+		for _, item := range typed {
+			codes = appendFNSCPVValues(codes, seen, item)
+		}
+	}
+	return codes
+}
+
+func isCPVCode(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) != 8 {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func appendLegacyLotCPV(codes []string, seen map[string]bool, value any) []string {

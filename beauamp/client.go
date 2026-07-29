@@ -180,6 +180,7 @@ func (c *Client) Search(ctx context.Context, q muninn.Query) (muninn.ProviderRes
 		return muninn.ProviderResult{}, err
 	}
 	terms := keywords(q)
+	cpvFilters := tabularCPVFilters(q.CPVCodes)
 
 	limit := maxFetch
 	if q.CandidateLimit > 0 && q.CandidateLimit < limit {
@@ -195,40 +196,45 @@ func (c *Client) Search(ctx context.Context, q muninn.Query) (muninn.ProviderRes
 resourcesLoop:
 	for _, res := range resources {
 		for _, term := range terms {
-			for page := 1; ; page++ {
-				resp, err := c.fetchPage(ctx, res, term, pageSize, page, q)
-				if err != nil {
-					if errors.Is(err, errResourceNotIndexed) {
-						continue resourcesLoop
+			for _, cpvFilter := range cpvFilters {
+				for page := 1; ; page++ {
+					resp, err := c.fetchPage(ctx, res, term, cpvFilter, pageSize, page, q)
+					if err != nil {
+						if errors.Is(err, errResourceNotIndexed) {
+							continue resourcesLoop
+						}
+						return muninn.ProviderResult{
+							Items:      out,
+							Total:      len(out),
+							TotalExact: false,
+							Truncated:  true,
+						}, err
 					}
-					return muninn.ProviderResult{
-						Items:      out,
-						Total:      len(out),
-						TotalExact: false,
-						Truncated:  true,
-					}, err
-				}
-				if page == 1 {
-					rawTotal += resp.Meta.Total
-				}
-				for _, rec := range resp.Data {
-					t := mapRecord(rec)
-					if q.MatchAll && !containsAll(t.Objet, q.Keywords) {
-						continue
+					if page == 1 {
+						rawTotal += resp.Meta.Total
 					}
-					key := t.DedupKey()
-					if index, exists := indexByKey[key]; exists {
-						out[index] = muninn.MergeTenders([]muninn.Tender{out[index], t})[0]
-						continue
+					for _, rec := range resp.Data {
+						t := mapRecord(rec)
+						if q.MatchAll && !containsAll(t.Objet, q.Keywords) {
+							continue
+						}
+						key := t.DedupKey()
+						if index, exists := indexByKey[key]; exists {
+							out[index] = muninn.MergeTenders([]muninn.Tender{out[index], t})[0]
+							continue
+						}
+						indexByKey[key] = len(out)
+						out = append(out, t)
+						if len(out) >= limit {
+							truncated = true
+							break
+						}
 					}
-					indexByKey[key] = len(out)
-					out = append(out, t)
-					if len(out) >= limit {
-						truncated = true
+					if truncated || len(resp.Data) < pageSize || page*pageSize >= resp.Meta.Total {
 						break
 					}
 				}
-				if truncated || len(resp.Data) < pageSize || page*pageSize >= resp.Meta.Total {
+				if truncated {
 					break
 				}
 			}
@@ -256,6 +262,58 @@ resourcesLoop:
 		TotalExact: !truncated,
 		Truncated:  truncated,
 	}, nil
+}
+
+type tabularCPVFilter struct {
+	parameter string
+	value     string
+}
+
+// tabularCPVFilters uses __in for canonical full CPV codes. Prefix searches
+// fall back to __contains because the tabular API exposes no starts-with
+// operator; FilterTenders applies the authoritative prefix check afterwards.
+func tabularCPVFilters(codes []string) []tabularCPVFilter {
+	var prefixes []string
+	seen := map[string]bool{}
+	allFull := true
+	for _, code := range codes {
+		code = strings.TrimSpace(code)
+		if code == "" || seen[code] {
+			continue
+		}
+		seen[code] = true
+		prefixes = append(prefixes, code)
+		allFull = allFull && isFullCPV(code)
+	}
+	if len(prefixes) == 0 {
+		return []tabularCPVFilter{{}}
+	}
+	if allFull {
+		return []tabularCPVFilter{{
+			parameter: "cpv__in",
+			value:     strings.Join(prefixes, ","),
+		}}
+	}
+	filters := make([]tabularCPVFilter, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		filters = append(filters, tabularCPVFilter{
+			parameter: "cpv__contains",
+			value:     prefix,
+		})
+	}
+	return filters
+}
+
+func isFullCPV(value string) bool {
+	if len(value) != 8 {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // keywords returns the trimmed non-empty keywords, or a single empty term so the
@@ -298,32 +356,19 @@ type tabularResponse struct {
 // the objet column plus the advanced criteria (CPV prefix, amount range, buyer
 // and supplier SIREN). The advanced filters are pushed server-side via the
 // tabular API's per-column operators so the API returns only matching rows.
-func (c *Client) fetchPage(ctx context.Context, resourceID, keyword string, size, page int, q muninn.Query) (tabularResponse, error) {
+func (c *Client) fetchPage(
+	ctx context.Context,
+	resourceID, keyword string,
+	cpvFilter tabularCPVFilter,
+	size, page int,
+	q muninn.Query,
+) (tabularResponse, error) {
 	params := url.Values{}
 	if keyword != "" {
 		params.Set(searchField+"__contains", keyword)
 	}
-	// CPV: the API supports a "starts_with" operator on text columns.
-	if len(q.CPVCodes) > 0 {
-		var prefixes []string
-		for _, c := range q.CPVCodes {
-			c = strings.TrimSpace(c)
-			if c == "" {
-				continue
-			}
-			prefixes = append(prefixes, c)
-		}
-		switch len(prefixes) {
-		case 1:
-			params.Set("cpv__startswith", prefixes[0])
-		default:
-			// Multiple CPV prefixes combine as OR via the `or` parameter.
-			var parts []string
-			for _, p := range prefixes {
-				parts = append(parts, fmt.Sprintf(`cpv__startswith="%s"`, p))
-			}
-			params.Set("or", "("+strings.Join(parts, ",")+")")
-		}
+	if cpvFilter.parameter != "" {
+		params.Set(cpvFilter.parameter, cpvFilter.value)
 	}
 	// Amount range: BEAUAMP exposes several amount columns; the tabular API
 	// only filters per column, so we narrow on the first present one. We pick
@@ -331,10 +376,10 @@ func (c *Client) fetchPage(ctx context.Context, resourceID, keyword string, size
 	// columns when this one is missing, so a false positive (an awarded amount
 	// recorded on a sibling column only) is the only consequence.
 	if q.MontantMin > 0 {
-		params.Set("valeur_totale__gte", strconv.FormatFloat(q.MontantMin, 'f', -1, 64))
+		params.Set("valeur_totale__greater", strconv.FormatFloat(q.MontantMin, 'f', -1, 64))
 	}
 	if q.MontantMax > 0 {
-		params.Set("valeur_totale__lte", strconv.FormatFloat(q.MontantMax, 'f', -1, 64))
+		params.Set("valeur_totale__less", strconv.FormatFloat(q.MontantMax, 'f', -1, 64))
 	}
 	if s := strings.TrimSpace(q.BuyerSIREN); s != "" {
 		params.Set("siren_acheteur__exact", s)

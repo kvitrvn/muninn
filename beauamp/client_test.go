@@ -76,19 +76,36 @@ func newTabularServer(t *testing.T, rows []map[string]any) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		term := q.Get("objet__contains")
-		wantCPV := q.Get("cpv__startswith")
-		minAmt := q.Get("valeur_totale__gte")
-		maxAmt := q.Get("valeur_totale__lte")
+		wantCPVContains := q.Get("cpv__contains")
+		wantCPVIn := strings.Split(q.Get("cpv__in"), ",")
+		minAmt := q.Get("valeur_totale__greater")
+		maxAmt := q.Get("valeur_totale__less")
 		wantSIREN := q.Get("siren_acheteur__exact")
 		wantSupplierSIREN := q.Get("siren_fournisseur__exact")
+		if q.Has("cpv__startswith") {
+			t.Errorf("query contains unsupported cpv__startswith filter: %s", r.URL.RawQuery)
+		}
 
 		var matched []map[string]any
 		for _, row := range rows {
 			if term != "" && !strings.Contains(strings.ToLower(anyStr(row["objet"])), strings.ToLower(term)) {
 				continue
 			}
-			if wantCPV != "" && !strings.HasPrefix(anyStr(row["cpv"]), wantCPV) {
+			rowCPV := anyStr(row["cpv"])
+			if wantCPVContains != "" && !strings.Contains(rowCPV, wantCPVContains) {
 				continue
+			}
+			if len(wantCPVIn) > 0 && wantCPVIn[0] != "" {
+				found := false
+				for _, want := range wantCPVIn {
+					if rowCPV == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					continue
+				}
 			}
 			if minAmt != "" {
 				amt := anyFloat(row["valeur_totale"])
@@ -388,6 +405,50 @@ func TestSearch_AdvancedFiltersPushed(t *testing.T) {
 	// Only "c" matches all four filters (cpv 72*, montant >= 100k, SIREN 222).
 	if len(got.Items) != 1 || got.Items[0].Sources[0].ID != "c" {
 		t.Errorf("got %d tenders, want only c: %+v", len(got.Items), got.Items)
+	}
+}
+
+func TestSearch_CPVFiltersUseSupportedTabularOperators(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Has("cpv__startswith") || q.Has("or") {
+			t.Errorf("query contains unsupported CPV parameters: %s", r.URL.RawQuery)
+		}
+		if got := q.Get("cpv__in"); got != "38295000,38112100" {
+			t.Errorf("cpv__in = %q, want 38295000,38112100", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{},
+			"meta": map[string]any{"page": 1, "page_size": 100, "total": 0},
+		})
+	}))
+	defer srv.Close()
+
+	_, err := testClient(srv.URL).Search(context.Background(), muninn.Query{
+		CPVCodes: []string{"38295000", "38112100"},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+}
+
+func TestSearch_CPVContainsCandidatesArePostFilteredAsPrefixes(t *testing.T) {
+	rows := []map[string]any{
+		{"id_boamp_attribution": "prefix", "objet": "Match", "cpv": "12000000"},
+		{"id_boamp_attribution": "substring", "objet": "False positive", "cpv": "99120000"},
+	}
+	srv := newTabularServer(t, rows)
+	defer srv.Close()
+
+	got, err := testClient(srv.URL).Search(context.Background(), muninn.Query{
+		CPVCodes: []string{"12"},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Sources[0].ID != "prefix" {
+		t.Fatalf("items = %+v, want prefix match only", got.Items)
 	}
 }
 

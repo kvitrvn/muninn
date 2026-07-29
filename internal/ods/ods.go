@@ -215,7 +215,7 @@ func ParseDate(v string) (time.Time, error) {
 
 // CPVClause builds an ODSQL clause matching any of the supplied CPV code
 // prefixes against column. A code matches when the column value starts with the
-// prefix (using the Opendatasoft `starts with` operator). Returns "" when no
+// prefix (using the Opendatasoft startswith() predicate). Returns "" when no
 // prefix is provided. CPV codes should be the canonical 8-digit root (the same
 // normalization Tender.cpvRoot applies); the caller is responsible for it so
 // this helper stays free of source-specific quirks.
@@ -229,7 +229,7 @@ func CPVClause(q muninn.Query, column string) string {
 		if c == "" {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf(`%s starts with "%s"`, column, Escape(c)))
+		parts = append(parts, fmt.Sprintf(`startswith(%s, "%s")`, column, Escape(c)))
 	}
 	if len(parts) == 0 {
 		return ""

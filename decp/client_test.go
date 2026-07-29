@@ -107,7 +107,7 @@ func TestBuildWhere_AdvancedFilters(t *testing.T) {
 		BuyerSIREN:    "210500237",
 		SupplierSIRET: "49884169100039",
 	})
-	want := `(codecpv starts with "72" OR codecpv starts with "3019") AND (montant >= 40000 AND montant <= 500000) AND search(acheteur_id, "210500237") AND ((titulaire_typeidentifiant_1 = "SIRET" AND titulaire_id_1 = "49884169100039") OR (titulaire_typeidentifiant_2 = "SIRET" AND titulaire_id_2 = "49884169100039") OR (titulaire_typeidentifiant_3 = "SIRET" AND titulaire_id_3 = "49884169100039"))`
+	want := `(startswith(codecpv, "72") OR startswith(codecpv, "3019")) AND (montant >= 40000 AND montant <= 500000) AND search(acheteur_id, "210500237") AND ((titulaire_typeidentifiant_1 = "SIRET" AND titulaire_id_1 = "49884169100039") OR (titulaire_typeidentifiant_2 = "SIRET" AND titulaire_id_2 = "49884169100039") OR (titulaire_typeidentifiant_3 = "SIRET" AND titulaire_id_3 = "49884169100039"))`
 	if got != want {
 		t.Errorf("buildWhere() = %q\nwant: %q", got, want)
 	}
@@ -265,7 +265,7 @@ func TestBuildWhere_NoAdvancedFilters(t *testing.T) {
 }
 
 func TestCPVClause(t *testing.T) {
-	if got := ods.CPVClause(muninn.Query{CPVCodes: []string{"72"}}, "codecpv"); got != `(codecpv starts with "72")` {
+	if got := ods.CPVClause(muninn.Query{CPVCodes: []string{"72"}}, "codecpv"); got != `(startswith(codecpv, "72"))` {
 		t.Errorf("CPVClause = %q", got)
 	}
 	if got := ods.CPVClause(muninn.Query{}, "codecpv"); got != "" {
