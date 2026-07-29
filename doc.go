@@ -16,7 +16,9 @@
 //		PageSize:  25,
 //	})
 //
-// Tender.Sources preserves the native ID, URL and raw payload of every source
-// contributing to a consolidated record. Muninn deliberately favors missed
-// merges over false merges when cross-source evidence is incomplete.
+// Tender.Sources preserves the native notice ID, row ID, related IDs, URL and
+// raw payload of every source contributing to a consolidated record. Optional
+// BEAUAMP enrichment is secondary and auditable: it never changes the BOAMP
+// result used to decide that a tender is open. Muninn deliberately favors
+// missed merges over false merges when cross-source evidence is incomplete.
 package muninn

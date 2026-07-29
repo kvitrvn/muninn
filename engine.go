@@ -83,6 +83,15 @@ func (e *Engine) Search(ctx context.Context, q Query) (SearchResult, error) {
 	calls := make([]providerCall, len(e.providers))
 	for index, provider := range e.providers {
 		calls[index] = providerCall{index: index, provider: provider, query: q}
+		if q.Enrichment != nil && isOpenOnlyQuery(q) {
+			if _, ok := provider.(Enricher); ok {
+				// An enrichment source is secondary for an open-tender search.
+				// In particular, BEAUAMP must not be asked to prove that a
+				// BOAMP notice is still open and must not add a main warning.
+				calls[index].skip = true
+				continue
+			}
+		}
 		var supportedStatuses []TenderStatus
 		for _, status := range q.Statuses {
 			filter := statusFilter(status)
@@ -149,6 +158,7 @@ func (e *Engine) Search(ctx context.Context, q Query) (SearchResult, error) {
 			providerQuery.Cursor = ""
 			providerQuery.PageSize = 0
 			providerQuery.Sort = Sort{}
+			providerQuery.Enrichment = nil
 			responses[call.index].result, responses[call.index].err = call.provider.Search(ctx, providerQuery)
 		}(call)
 	}
@@ -239,14 +249,90 @@ func (e *Engine) Search(ctx context.Context, q Query) (SearchResult, error) {
 	}
 
 	partial := len(warnings) > 0
-	return SearchResult{
+	result := SearchResult{
 		Items:      page,
 		Total:      len(items),
 		TotalExact: !partial,
 		NextCursor: next,
 		Partial:    partial,
 		Warnings:   warnings,
-	}, nil
+	}
+	if q.Enrichment != nil {
+		enrichment := e.enrichPage(ctx, page, q.Enrichment.normalized(), evaluatedAt)
+		result.Enrichment = &enrichment
+	}
+	return result, nil
+}
+
+func isOpenOnlyQuery(q Query) bool {
+	if len(q.Statuses) == 0 {
+		return false
+	}
+	for _, status := range q.Statuses {
+		if status != StatusOpen {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Engine) enrichPage(
+	ctx context.Context,
+	page []Tender,
+	options EnrichmentOptions,
+	openAt time.Time,
+) EnrichmentResult {
+	empty := make([]TenderEnrichment, len(page))
+	for index := range page {
+		empty[index].TenderKey = page[index].DedupKey()
+	}
+
+	for _, provider := range e.providers {
+		enricher, ok := provider.(Enricher)
+		if !ok {
+			continue
+		}
+		result, err := enricher.Enrich(ctx, append([]Tender(nil), page...), options, openAt)
+		if err == nil {
+			return alignEnrichment(page, result)
+		}
+		result = alignEnrichment(page, result)
+		result.Partial = true
+		result.Warnings = append(result.Warnings, Warning{
+			Provider: enricher.Name(),
+			Code:     WarningProviderError,
+			Message:  "enrichment failed",
+			Err:      err,
+		})
+		return result
+	}
+
+	return EnrichmentResult{
+		Items:   empty,
+		Partial: true,
+		Warnings: []Warning{{
+			Provider: "enrichment",
+			Code:     WarningProviderError,
+			Message:  "no enrichment provider configured",
+		}},
+	}
+}
+
+func alignEnrichment(page []Tender, result EnrichmentResult) EnrichmentResult {
+	byKey := make(map[string]TenderEnrichment, len(result.Items))
+	for _, item := range result.Items {
+		if item.TenderKey != "" {
+			byKey[item.TenderKey] = item
+		}
+	}
+	aligned := make([]TenderEnrichment, len(page))
+	for index := range page {
+		key := page[index].DedupKey()
+		aligned[index] = byKey[key]
+		aligned[index].TenderKey = key
+	}
+	result.Items = aligned
+	return result
 }
 
 func statusFilter(status TenderStatus) Filter {
@@ -299,6 +385,10 @@ func encodeCursor(cursor pageCursor) (string, error) {
 func queryFingerprint(q Query) string {
 	q.Cursor = ""
 	q.PageSize = 0
+	if q.Enrichment != nil {
+		normalized := q.Enrichment.normalized()
+		q.Enrichment = &normalized
+	}
 	data, _ := json.Marshal(q)
 	sum := sha256.Sum256(data)
 	return base64.RawURLEncoding.EncodeToString(sum[:12])

@@ -67,6 +67,8 @@ const (
 	WarningUnsupportedFilter WarningCode = "unsupported_filter"
 	WarningApproximateFilter WarningCode = "approximate_filter"
 	WarningTruncated         WarningCode = "truncated"
+	WarningCoverageGap       WarningCode = "coverage_gap"
+	WarningResourceError     WarningCode = "resource_error"
 )
 
 // Warning describes a non-fatal source-level problem.
@@ -85,4 +87,5 @@ type SearchResult struct {
 	NextCursor string
 	Partial    bool
 	Warnings   []Warning
+	Enrichment *EnrichmentResult
 }

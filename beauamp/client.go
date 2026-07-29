@@ -1,4 +1,4 @@
-// Package beauamp implements muninn.Provider for BEAUAMP (Base Étendue,
+// Package beauamp implements muninn.Provider and muninn.Enricher for BEAUAMP (Base Étendue,
 // Améliorée et Unifiée des Annonces des Marchés Publics), published on
 // data.gouv.fr. BEAUAMP is BOAMP consolidated into a tabular form and enriched
 // with SIRENE matching and award results, so a single record already carries
@@ -20,6 +20,9 @@
 //     resources are queryable, which bounds how far back a query reaches.
 //   - The dataset has no department column; direct calls reject that filter.
 //   - Full-text requests are approximate because only objet can be searched.
+//   - As an Enricher for an open Engine search, BEAUAMP only supplies
+//     attribution relations, composite candidates and buyer history after
+//     BOAMP sorting/pagination. It never changes the primary lifecycle state.
 package beauamp
 
 import (

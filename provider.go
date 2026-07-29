@@ -52,6 +52,12 @@ type Query struct {
 	// CandidateLimit caps how many records each provider may collect before
 	// federation. Zero uses the provider's safe default.
 	CandidateLimit int
+
+	// Enrichment enables optional, source-specific context on the page returned
+	// by Engine. A nil value preserves the regular federated-search behaviour.
+	// Enrichment never changes Items, Total, TotalExact, Partial or the main
+	// Warnings collection.
+	Enrichment *EnrichmentOptions
 }
 
 // Validate checks query invariants without performing I/O.
@@ -73,6 +79,11 @@ func (q Query) Validate() error {
 		return &ValidationError{Field: "PageSize", Problem: fmt.Sprintf("must not exceed %d", MaxPageSize)}
 	case q.CandidateLimit < 0:
 		return &ValidationError{Field: "CandidateLimit", Problem: "must be non-negative"}
+	}
+	if q.Enrichment != nil {
+		if err := q.Enrichment.Validate(); err != nil {
+			return err
+		}
 	}
 
 	if s := strings.TrimSpace(q.BuyerSIREN); s != "" && !isDigits(s, 9) {
@@ -110,6 +121,8 @@ func ValidateProviderQuery(q Query) error {
 		return &ValidationError{Field: "PageSize", Problem: "is supported by Engine only"}
 	case q.Sort.Field != "" || q.Sort.Direction != "":
 		return &ValidationError{Field: "Sort", Problem: "is supported by Engine only"}
+	case q.Enrichment != nil:
+		return &ValidationError{Field: "Enrichment", Problem: "is supported by Engine only"}
 	default:
 		return nil
 	}
@@ -151,4 +164,17 @@ type Provider interface {
 	Name() string
 	Capabilities() Capabilities
 	Search(ctx context.Context, q Query) (ProviderResult, error)
+}
+
+// Enricher is an optional secondary source detected by Engine. Implementations
+// receive only the already sorted and paginated primary results. They must not
+// mutate those tenders or use their data to alter the primary search result.
+type Enricher interface {
+	Name() string
+	Enrich(
+		ctx context.Context,
+		items []Tender,
+		options EnrichmentOptions,
+		openAt time.Time,
+	) (EnrichmentResult, error)
 }

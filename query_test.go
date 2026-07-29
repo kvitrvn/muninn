@@ -113,3 +113,53 @@ func TestQuery_ValidateSupplierSIREN(t *testing.T) {
 		})
 	}
 }
+
+func TestQuery_ValidateEnrichmentOptions(t *testing.T) {
+	tests := []struct {
+		name    string
+		options EnrichmentOptions
+		field   string
+	}{
+		{
+			name:    "negative history months",
+			options: EnrichmentOptions{HistoryMonths: -1},
+			field:   "Enrichment.HistoryMonths",
+		},
+		{
+			name:    "history months above maximum",
+			options: EnrichmentOptions{HistoryMonths: MaxEnrichmentHistoryMonths + 1},
+			field:   "Enrichment.HistoryMonths",
+		},
+		{
+			name:    "history limit above maximum",
+			options: EnrichmentOptions{HistoryLimit: MaxEnrichmentHistoryLimit + 1},
+			field:   "Enrichment.HistoryLimit",
+		},
+		{
+			name:    "negative candidate limit",
+			options: EnrichmentOptions{CandidateLimit: -1},
+			field:   "Enrichment.CandidateLimit",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := (Query{Enrichment: &test.options}).Validate()
+			var validation *ValidationError
+			if !errors.As(err, &validation) || validation.Field != test.field {
+				t.Fatalf("Validate() = %v, want field %s", err, test.field)
+			}
+		})
+	}
+
+	if err := (Query{Enrichment: &EnrichmentOptions{}}).Validate(); err != nil {
+		t.Fatalf("zero options should use defaults: %v", err)
+	}
+}
+
+func TestValidateProviderQuery_RejectsEngineEnrichment(t *testing.T) {
+	var validation *ValidationError
+	err := ValidateProviderQuery(Query{Enrichment: &EnrichmentOptions{}})
+	if !errors.As(err, &validation) || validation.Field != "Enrichment" {
+		t.Fatalf("error = %v", err)
+	}
+}

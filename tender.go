@@ -141,15 +141,29 @@ func (b Buyer) SIREN9() string {
 // SourceReference preserves the identity and raw payload of one source that
 // contributed to a normalized Tender.
 type SourceReference struct {
-	Provider  string
-	ID        string
-	URL       string
-	RawFields map[string]any
+	Provider   string
+	ID         string
+	RecordID   string
+	RelatedIDs []string
+	URL        string
+	RawFields  map[string]any
+}
+
+// TenderLot preserves lot-level CPV codes, amounts, suppliers and native
+// BEAUAMP rows without breaking the historical flat Tender fields.
+type TenderLot struct {
+	ID            string
+	Objet         string
+	CPVCodes      []string
+	Suppliers     []Buyer
+	MontantEstime float64
+	Sources       []SourceReference
 }
 
 // Tender is the normalized representation of a public procurement notice.
 type Tender struct {
 	Sources []SourceReference
+	Lots    []TenderLot
 
 	Titre    string
 	Objet    string

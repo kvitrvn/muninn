@@ -108,9 +108,13 @@ func (m monthlyResource) after(year, month int) bool {
 // catalogResponse is the subset of the data.gouv.fr dataset API we read.
 type catalogResponse struct {
 	Resources []struct {
-		ID     string `json:"id"`
-		Title  string `json:"title"`
-		Format string `json:"format"`
+		ID           string `json:"id"`
+		Title        string `json:"title"`
+		Format       string `json:"format"`
+		URL          string `json:"url"`
+		Latest       string `json:"latest"`
+		CreatedAt    string `json:"created_at"`
+		LastModified string `json:"last_modified"`
 	} `json:"resources"`
 }
 

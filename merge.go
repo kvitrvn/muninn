@@ -2,6 +2,7 @@ package muninn
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,6 +28,7 @@ func MergeTenders(tenders []Tender) []Tender {
 	for _, tender := range tenders {
 		tender.Sources = normalizedSources(tender.Sources)
 		tender.Suppliers = normalizedSuppliers(tender.Suppliers)
+		tender.Lots = normalizedLots(tender.Lots)
 
 		target := -1
 		for _, key := range recordKeys(tender) {
@@ -66,6 +68,7 @@ func MergeTenders(tenders []Tender) []Tender {
 	for _, group := range groups {
 		group.merged.Sources = normalizedSources(group.merged.Sources)
 		group.merged.Suppliers = normalizedSuppliers(group.merged.Suppliers)
+		group.merged.Lots = normalizedLots(group.merged.Lots)
 		out = append(out, group.merged)
 	}
 	return out
@@ -198,6 +201,7 @@ func enrichTender(a, b Tender) Tender {
 	}
 	a.CPVCodes = unionStrings(a.CPVCodes, b.CPVCodes)
 	a.Sources = append(a.Sources, b.Sources...)
+	a.Lots = append(a.Lots, b.Lots...)
 	return a
 }
 
@@ -329,7 +333,7 @@ func normalizedSources(sources []SourceReference) []SourceReference {
 	byKey := map[string]SourceReference{}
 	var order []string
 	for _, source := range sources {
-		key := source.Provider + "|" + source.ID
+		key := source.Provider + "|" + source.ID + "|" + source.RecordID
 		if _, exists := byKey[key]; !exists {
 			order = append(order, key)
 			byKey[key] = source
@@ -342,12 +346,56 @@ func normalizedSources(sources []SourceReference) []SourceReference {
 		if current.RawFields == nil {
 			current.RawFields = source.RawFields
 		}
+		current.RelatedIDs = unionStrings(current.RelatedIDs, source.RelatedIDs)
 		byKey[key] = current
 	}
 	sort.Strings(order)
 	out := make([]SourceReference, 0, len(order))
 	for _, key := range order {
 		out = append(out, byKey[key])
+	}
+	return out
+}
+
+func normalizedLots(lots []TenderLot) []TenderLot {
+	if len(lots) == 0 {
+		return nil
+	}
+	byID := map[string]TenderLot{}
+	var order []string
+	for index, lot := range lots {
+		id := strings.TrimSpace(lot.ID)
+		if id == "" {
+			id = "\x00" + strings.Join([]string{
+				lot.Objet,
+				cpvRootSet(lot.CPVCodes),
+				strconv.Itoa(index),
+			}, "|")
+		}
+		current, exists := byID[id]
+		if !exists {
+			lot.Suppliers = normalizedSuppliers(lot.Suppliers)
+			lot.Sources = normalizedSources(lot.Sources)
+			lot.CPVCodes = unionStrings(nil, lot.CPVCodes)
+			byID[id] = lot
+			order = append(order, id)
+			continue
+		}
+		if current.Objet == "" {
+			current.Objet = lot.Objet
+		}
+		if current.MontantEstime == 0 {
+			current.MontantEstime = lot.MontantEstime
+		}
+		current.CPVCodes = unionStrings(current.CPVCodes, lot.CPVCodes)
+		current.Suppliers = normalizedSuppliers(append(current.Suppliers, lot.Suppliers...))
+		current.Sources = normalizedSources(append(current.Sources, lot.Sources...))
+		byID[id] = current
+	}
+	sort.Strings(order)
+	out := make([]TenderLot, 0, len(order))
+	for _, id := range order {
+		out = append(out, byID[id])
 	}
 	return out
 }

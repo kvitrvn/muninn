@@ -15,6 +15,25 @@ type engineStubProvider struct {
 	seen chan Query
 }
 
+type engineStubEnricher struct {
+	engineStubProvider
+	enrichment EnrichmentResult
+	enrichErr  error
+	enrichSeen chan []Tender
+}
+
+func (p engineStubEnricher) Enrich(
+	_ context.Context,
+	items []Tender,
+	_ EnrichmentOptions,
+	_ time.Time,
+) (EnrichmentResult, error) {
+	if p.enrichSeen != nil {
+		p.enrichSeen <- items
+	}
+	return p.enrichment, p.enrichErr
+}
+
 func (p engineStubProvider) Name() string               { return p.name }
 func (p engineStubProvider) Capabilities() Capabilities { return p.caps }
 func (p engineStubProvider) Search(_ context.Context, q Query) (ProviderResult, error) {
@@ -71,6 +90,144 @@ func TestEngine_SearchFiltersOpenAndSortsByDeadline(t *testing.T) {
 	}
 	if result.Partial || !result.TotalExact || result.Total != 2 {
 		t.Fatalf("metadata = %+v", result)
+	}
+}
+
+func TestEngine_OpenEnrichmentIsSecondaryAndDoesNotChangePrimaryGuarantees(t *testing.T) {
+	at := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	primary := testTender("boamp", "26-1", at.Add(-time.Hour), at.Add(24*time.Hour))
+	enrichSeen := make(chan []Tender, 1)
+	enricherSearchSeen := make(chan Query, 1)
+	enricher := engineStubEnricher{
+		engineStubProvider: engineStubProvider{
+			name: "beauamp",
+			seen: enricherSearchSeen,
+		},
+		enrichment: EnrichmentResult{
+			Items: []TenderEnrichment{{
+				TenderKey: primary.DedupKey(),
+				ExactRelations: []RelatedTender{{
+					Confidence: ConfidenceExact,
+				}},
+			}},
+		},
+		enrichSeen: enrichSeen,
+	}
+	engine := NewEngine(
+		engineStubProvider{
+			name: "boamp",
+			caps: Capabilities{FilterStatusOpen: Exact},
+			res:  ProviderResult{Items: []Tender{primary}, TotalExact: true},
+		},
+		enricher,
+	)
+
+	result, err := engine.Search(context.Background(), Query{
+		Statuses:   []TenderStatus{StatusOpen},
+		OpenAt:     at,
+		Enrichment: &EnrichmentOptions{},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Partial || !result.TotalExact || len(result.Warnings) != 0 {
+		t.Fatalf("primary metadata changed by enrichment: %+v", result)
+	}
+	if len(result.Items) != 1 || result.Items[0].DedupKey() != primary.DedupKey() {
+		t.Fatalf("primary items = %+v", result.Items)
+	}
+	if result.Enrichment == nil ||
+		len(result.Enrichment.Items) != 1 ||
+		len(result.Enrichment.Items[0].ExactRelations) != 1 {
+		t.Fatalf("enrichment = %+v", result.Enrichment)
+	}
+	select {
+	case got := <-enrichSeen:
+		if len(got) != 1 || got[0].DedupKey() != primary.DedupKey() {
+			t.Fatalf("enriched page = %+v", got)
+		}
+	default:
+		t.Fatal("enricher was not called")
+	}
+	select {
+	case <-enricherSearchSeen:
+		t.Fatal("enricher was queried as a primary provider")
+	default:
+	}
+}
+
+func TestEngine_EnrichmentFailureStaysOutOfPrimaryPartialState(t *testing.T) {
+	failure := errors.New("BEAUAMP unavailable")
+	at := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	primary := testTender("boamp", "26-1", at.Add(-time.Hour), at.Add(24*time.Hour))
+	engine := NewEngine(
+		engineStubProvider{
+			name: "boamp",
+			caps: Capabilities{FilterStatusOpen: Exact},
+			res:  ProviderResult{Items: []Tender{primary}, TotalExact: true},
+		},
+		engineStubEnricher{
+			engineStubProvider: engineStubProvider{name: "beauamp"},
+			enrichErr:          failure,
+		},
+	)
+
+	result, err := engine.Search(context.Background(), Query{
+		Statuses:   []TenderStatus{StatusOpen},
+		OpenAt:     at,
+		Enrichment: &EnrichmentOptions{},
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if result.Partial || !result.TotalExact || len(result.Warnings) != 0 {
+		t.Fatalf("primary metadata changed by enrichment failure: %+v", result)
+	}
+	if result.Enrichment == nil || !result.Enrichment.Partial ||
+		len(result.Enrichment.Warnings) != 1 ||
+		!errors.Is(result.Enrichment.Warnings[0].Err, failure) {
+		t.Fatalf("enrichment = %+v", result.Enrichment)
+	}
+}
+
+func TestEngine_CursorFingerprintIncludesNormalizedEnrichmentOptions(t *testing.T) {
+	at := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	engine := NewEngine(
+		engineStubProvider{
+			name: "boamp",
+			caps: Capabilities{FilterStatusOpen: Exact},
+			res: ProviderResult{Items: []Tender{
+				testTender("boamp", "1", at.Add(-time.Hour), at.Add(24*time.Hour)),
+				testTender("boamp", "2", at.Add(-2*time.Hour), at.Add(48*time.Hour)),
+			}},
+		},
+		engineStubEnricher{engineStubProvider: engineStubProvider{name: "beauamp"}},
+	)
+	first, err := engine.Search(context.Background(), Query{
+		Statuses:   []TenderStatus{StatusOpen},
+		OpenAt:     at,
+		PageSize:   1,
+		Enrichment: &EnrichmentOptions{},
+	})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.NextCursor == "" {
+		t.Fatal("first page has no cursor")
+	}
+
+	_, err = engine.Search(context.Background(), Query{
+		Statuses: []TenderStatus{StatusOpen},
+		OpenAt:   at,
+		PageSize: 1,
+		Cursor:   first.NextCursor,
+		Enrichment: &EnrichmentOptions{
+			HistoryMonths: 12,
+		},
+	})
+	var validation *ValidationError
+	if !errors.As(err, &validation) || validation.Field != "Cursor" {
+		t.Fatalf("cursor mismatch error = %v", err)
 	}
 }
 

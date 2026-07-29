@@ -19,6 +19,7 @@ database, run a server, or impose a cache.
 - Concurrent provider calls with partial-result reporting
 - Conservative cross-source consolidation with raw source provenance
 - Deterministic sorting and opaque cursor pagination
+- Optional, auditable BEAUAMP attribution context for open BOAMP notices
 - Configurable HTTP clients, timeouts, and retry policies
 - No third-party runtime dependencies
 
@@ -73,6 +74,7 @@ func main() {
 		Statuses:  []muninn.TenderStatus{muninn.StatusOpen},
 		Sort:      muninn.Sort{Field: muninn.SortByDeadline},
 		PageSize:  25,
+		Enrichment: &muninn.EnrichmentOptions{},
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -152,6 +154,7 @@ with OR, except when `MatchAll` requires every keyword.
 | `PageSize` | Results per page; 50 by default and 200 maximum |
 | `Cursor` | Opaque cursor returned by a previous search |
 | `CandidateLimit` | Maximum records collected per provider; zero uses a safe provider default |
+| `Enrichment` | Optional BEAUAMP attribution context for the returned page; nil disables it |
 
 Use `Query.Validate` when you want to reject invalid user input before making a
 network call:
@@ -178,6 +181,44 @@ passed that deadline, and has no known awarded supplier.
 
 For reproducible searches, set `Query.OpenAt`. When it is zero, the engine uses
 the current time and stores that value in the pagination cursor.
+
+### Auditable BEAUAMP enrichment
+
+For an open-tender search, BOAMP remains the only source used to determine
+whether a notice is still answerable. Setting `Query.Enrichment` makes a
+configured `beauamp.Client` run only after sorting and pagination, on the
+current BOAMP page:
+
+```go
+result, err := engine.Search(ctx, muninn.Query{
+	Statuses: []muninn.TenderStatus{muninn.StatusOpen},
+	OpenAt:   time.Now(),
+	Enrichment: &muninn.EnrichmentOptions{
+		HistoryMonths: 24, // default 24, maximum 60
+		HistoryLimit:  5,  // default 5, maximum 50
+	},
+})
+```
+
+The enrichment keeps three concepts separate:
+
+- `ExactRelations`: a BEAUAMP award carrying the same BOAMP award ID, or a
+  source-reported contract-notice ID;
+- `Candidates`: same buyer SIREN and CPV, compatible dates, and object-token
+  Jaccard similarity of at least 0.85; these are never merged automatically;
+- `BuyerHistory`: recent awarded notices for the same buyer and CPV family.
+
+Every relation includes its confidence and evidence. `Conflicts` reports, for
+example, an indicative BEAUAMP award linked to a BOAMP notice that is still
+open. BEAUAMP never changes the BOAMP status, deadline, primary `Items`,
+`Total`, `TotalExact`, `Partial`, or main `Warnings`. Coverage gaps, resource
+errors, and truncation are reported only under `SearchResult.Enrichment`.
+
+BEAUAMP rows are loaded once per selected resource with all page buyer SIRENs.
+Monthly resources cover the requested history, with annual files used after
+the publisher removes a completed year's monthly files. Current-month daily
+resources are included and streamed from CSV when the tabular API has not
+indexed them.
 
 ```go
 result, err := muninn.NewEngine(boamp.New()).Search(ctx, muninn.Query{
@@ -229,6 +270,7 @@ stale if the upstream result set changes between pages.
 | `NextCursor` | Opaque cursor for the next page, or an empty string |
 | `Partial` | Whether warnings affected coverage or precision |
 | `Warnings` | Machine-readable provider warnings |
+| `Enrichment` | Optional BEAUAMP context and its independent coverage, partial flag, and warnings |
 
 Warnings use stable codes:
 
@@ -236,20 +278,26 @@ Warnings use stable codes:
 - `muninn.WarningUnsupportedFilter`
 - `muninn.WarningApproximateFilter`
 - `muninn.WarningTruncated`
+- `muninn.WarningCoverageGap`
+- `muninn.WarningResourceError`
 
 Each `Tender` keeps all contributing source records:
 
 ```go
 type SourceReference struct {
-	Provider  string
-	ID        string
-	URL       string
-	RawFields map[string]any
+	Provider   string
+	ID         string
+	RecordID   string
+	RelatedIDs []string
+	URL        string
+	RawFields  map[string]any
 }
 ```
 
 Use `Tender.ProviderNames` for display and `Tender.Sources` when you need the
-native identifier, source URL, or raw source fields.
+native identifier, row identifier, related identifiers, source URL, or raw
+source fields. `Tender.Lots` preserves BEAUAMP lot-level suppliers, CPV codes,
+amounts, and source rows while the existing flat fields remain available.
 
 Awarded contractors are exposed through `Tender.Suppliers`. DECP preserves the
 native titulaire order, accepts SIREN and SIRET identifiers, ignores unrelated
@@ -372,8 +420,9 @@ Provider implementations should:
   remain best effort. Historical supplier-SIREN searches also depend on the
   official company-search API and name matching, so the engine emits an
   approximate-filter warning.
-- BEAUAMP data is indicative and its tabular API only supports a subset of the
-  source data and filters.
+- BEAUAMP data is indicative attribution context, not a second proof that a
+  market is open. Its tabular API only supports a subset of the source data and
+  filters.
 - DECP contains awarded contracts, not the complete active-notice lifecycle.
 - Search completeness depends on upstream availability, pagination limits, API
   rate limits, and schema stability.
