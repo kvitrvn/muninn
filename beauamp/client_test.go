@@ -253,6 +253,59 @@ func TestSearch_SIRENFiltersUseExactOperator(t *testing.T) {
 	}
 }
 
+func TestSearch_SkipsResourceNotIndexed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/not-indexed/data/":
+			http.Error(w, "resource not found", http.StatusNotFound)
+		case "/indexed/data/":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{
+					"id_boamp_attribution": "indexed-result",
+					"objet":                "Maintenance applicative",
+				}},
+				"meta": map[string]any{"page": 1, "page_size": 100, "total": 1},
+			})
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(
+		WithTabularBaseURL(srv.URL+"/"),
+		WithResources("not-indexed", "indexed"),
+	)
+	got, err := c.Search(context.Background(), muninn.Query{})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Sources[0].ID != "indexed-result" {
+		t.Fatalf("items = %+v, want result from indexed resource", got.Items)
+	}
+}
+
+func TestSearch_ReturnsNonNotFoundResourceError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "malformed query", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	c := New(
+		WithTabularBaseURL(srv.URL+"/"),
+		WithResources("bad-request"),
+	)
+	_, err := c.Search(context.Background(), muninn.Query{})
+	if err == nil {
+		t.Fatal("Search returned nil error, want HTTP 400 error")
+	}
+	if !strings.Contains(err.Error(), "unexpected status 400") {
+		t.Fatalf("Search error = %q, want HTTP 400 status", err)
+	}
+}
+
 func TestSearch_MatchAllClientSide(t *testing.T) {
 	rows := []map[string]any{
 		{"id_boamp_attribution": "a", "objet": "Solution GED et archivage électronique", "siren_acheteur": "1", "cpv": "72"},

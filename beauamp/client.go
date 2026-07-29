@@ -25,6 +25,7 @@ package beauamp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -56,6 +57,8 @@ const (
 	// Search calls within a process into a single catalog fetch.
 	defaultResourceCacheTTL = time.Hour
 )
+
+var errResourceNotIndexed = errors.New("beauamp: resource not indexed")
 
 // Client queries BEAUAMP through the data.gouv.fr tabular API.
 type Client struct {
@@ -189,11 +192,15 @@ func (c *Client) Search(ctx context.Context, q muninn.Query) (muninn.ProviderRes
 		rawTotal  int
 		truncated bool
 	)
+resourcesLoop:
 	for _, res := range resources {
 		for _, term := range terms {
 			for page := 1; ; page++ {
 				resp, err := c.fetchPage(ctx, res, term, pageSize, page, q)
 				if err != nil {
+					if errors.Is(err, errResourceNotIndexed) {
+						continue resourcesLoop
+					}
 					return muninn.ProviderResult{
 						Items:      out,
 						Total:      len(out),
@@ -345,6 +352,10 @@ func (c *Client) fetchPage(ctx context.Context, resourceID, keyword string, size
 		return tabularResponse{}, fmt.Errorf("beauamp: request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return tabularResponse{}, fmt.Errorf("%w: %s", errResourceNotIndexed, body)
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return tabularResponse{}, fmt.Errorf("beauamp: unexpected status %d: %s", resp.StatusCode, body)
