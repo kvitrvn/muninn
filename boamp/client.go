@@ -329,20 +329,7 @@ func mapRecord(rec map[string]any) muninn.Tender {
 			if t.Engagement == muninn.EngagementInconnu {
 				t.Engagement = mapEngagementFromNested(nested)
 			}
-			// Best-effort: extract the buyer's SIREN/SIRET from the eForms
-			// identification block when present, so the post-fetch filter can
-			// narrow on it. Only one SIRET typically shows up here, but BOAMP
-			// may surface SIRET-like fields under different keys across versions.
-			if t.Buyer.SIREN == "" && t.Buyer.SIRET == "" {
-				if id := digDict(nested, "ORGANISME", "ACHETEUR", "IDENTIFICATION"); id != nil {
-					if v, ok := id["SIREN"].(string); ok && v != "" {
-						t.Buyer.SIREN = v
-					}
-					if v, ok := id["SIRET"].(string); ok && v != "" && t.Buyer.SIRET == "" {
-						t.Buyer.SIRET = v
-					}
-				}
-			}
+			enrichBuyerIdentifier(&t.Buyer, nested)
 			t.Suppliers = mergeSupplierLists(t.Suppliers, mapNestedSuppliers(nested))
 		}
 	}

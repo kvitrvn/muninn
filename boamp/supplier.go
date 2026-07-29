@@ -140,7 +140,7 @@ func mapLegacySuppliers(nested map[string]any) []muninn.Buyer {
 				Nom:   textValue(digLocal(record, "DENOMINATION")),
 				Ville: textValue(digLocal(record, "VILLE")),
 			}
-			setSupplierIdentifier(
+			setLegalEntityIdentifier(
 				&supplier,
 				firstText(
 					digLocal(record, "SIRET"),
@@ -186,21 +186,11 @@ func mapEFormsSuppliers(nested map[string]any) []muninn.Buyer {
 				Nom:   textValue(digLocal(partyName, "Name")),
 				Ville: textValue(digLocal(postalAddress, "CityName")),
 			}
-			setSupplierIdentifier(&supplier, textValue(digLocal(legalEntity, "CompanyID")))
+			setLegalEntityIdentifier(&supplier, textValue(digLocal(legalEntity, "CompanyID")))
 			suppliers = appendSupplier(suppliers, supplier)
 		}
 	}
 	return suppliers
-}
-
-func setSupplierIdentifier(supplier *muninn.Buyer, identifier string) {
-	identifier = strings.TrimSpace(identifier)
-	switch {
-	case isASCIIDigits(identifier, 14):
-		supplier.SIRET = identifier
-	case isASCIIDigits(identifier, 9):
-		supplier.SIREN = identifier
-	}
 }
 
 func identifySuppliers(suppliers []muninn.Buyer, siren string, names []string) []muninn.Buyer {

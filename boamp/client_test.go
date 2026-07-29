@@ -150,6 +150,139 @@ func TestMapRecord_FNSimpleCPV_26_74350(t *testing.T) {
 	}
 }
 
+func TestMapRecord_FNSimpleBuyerSIRET(t *testing.T) {
+	rec := map[string]any{
+		"idweb":       "26-75690",
+		"nomacheteur": "Commune De Megeve",
+		"donnees": `{
+			"FNSimple": {
+				"organisme": {
+					"nomOfficiel": "Commune De Megeve",
+					"typeIdentificationNational": {"siret": ""},
+					"codeIdentificationNational": "21740173600012",
+					"ville": "MEGEVE"
+				}
+			}
+		}`,
+	}
+
+	got := mapRecord(rec)
+	if got.Buyer.SIRET != "21740173600012" || got.Buyer.SIREN9() != "217401736" {
+		t.Fatalf("Buyer = %+v, want FNSimple buyer SIRET", got.Buyer)
+	}
+}
+
+func TestMapRecord_EFormsBuyerSIRETUsesContractingPartyReference(t *testing.T) {
+	rec := map[string]any{
+		"idweb":       "26-75225",
+		"nomacheteur": "PFC Sud-Ouest",
+		"donnees": `{
+			"EFORMS": {
+				"ContractNotice": {
+					"ext:UBLExtensions": {
+						"ext:UBLExtension": {
+							"ext:ExtensionContent": {
+								"efext:EformsExtension": {
+									"efac:Organizations": {
+										"efac:Organization": [
+											{
+												"efac:Company": {
+													"cac:PartyIdentification": {"cbc:ID": "ORG-PUBLISHER"},
+													"cac:PartyName": {"cbc:Name": "Publication Services"},
+													"cac:PartyLegalEntity": {"cbc:CompanyID": "11111111100011"}
+												}
+											},
+											{
+												"efac:Company": {
+													"cac:PartyIdentification": {
+														"cbc:ID": {"@schemeName": "organization", "#text": "ORG-BUYER"}
+													},
+													"cac:PartyName": {"cbc:Name": "PFC Sud-Ouest"},
+													"cac:PartyLegalEntity": {
+														"cbc:CompanyID": {"@schemeName": "national", "#text": "20003236500013"}
+													}
+												}
+											},
+											{
+												"efac:Company": {
+													"cac:PartyIdentification": {"cbc:ID": "ORG-COURT"},
+													"cac:PartyName": {"cbc:Name": "Tribunal administratif"},
+													"cac:PartyLegalEntity": {"cbc:CompanyID": "17640002600017"}
+												}
+											}
+										]
+									}
+								}
+							}
+						}
+					},
+					"cac:ContractingParty": {
+						"cac:Party": {
+							"cac:PartyIdentification": {
+								"cbc:ID": {"@schemeName": "organization", "#text": "ORG-BUYER"}
+							}
+						}
+					}
+				}
+			}
+		}`,
+	}
+
+	got := mapRecord(rec)
+	if got.Buyer.SIRET != "20003236500013" || got.Buyer.SIREN9() != "200032365" {
+		t.Fatalf("Buyer = %+v, want referenced eForms buyer SIRET", got.Buyer)
+	}
+}
+
+func TestMapRecord_EFormsBuyerDoesNotUseUnreferencedOrganization(t *testing.T) {
+	rec := map[string]any{
+		"idweb":       "26-75018",
+		"nomacheteur": "Département de la Loire",
+		"donnees": `{
+			"EFORMS": {
+				"ContractNotice": {
+					"ext:UBLExtensions": {
+						"ext:UBLExtension": {
+							"ext:ExtensionContent": {
+								"efext:EformsExtension": {
+									"efac:Organizations": {
+										"efac:Organization": [
+											{
+												"efac:Company": {
+													"cac:PartyIdentification": {"cbc:ID": "ORG-PUBLISHER"},
+													"cac:PartyLegalEntity": {"cbc:CompanyID": "11111111100011"}
+												}
+											},
+											{
+												"efac:Company": {
+													"cac:PartyIdentification": {"cbc:ID": "ORG-BUYER"},
+													"cac:PartyLegalEntity": {
+														"cbc:CompanyID": {"@schemeName": "eu", "#text": "1"}
+													}
+												}
+											}
+										]
+									}
+								}
+							}
+						}
+					},
+					"cac:ContractingParty": {
+						"cac:Party": {
+							"cac:PartyIdentification": {"cbc:ID": "ORG-BUYER"}
+						}
+					}
+				}
+			}
+		}`,
+	}
+
+	got := mapRecord(rec)
+	if got.Buyer.SIREN != "" || got.Buyer.SIRET != "" {
+		t.Fatalf("Buyer = %+v, want no identifier from unrelated eForms organizations", got.Buyer)
+	}
+}
+
 func TestExtractCPV_EFormsAwardMultiLot(t *testing.T) {
 	nested := decodeNestedFixture(t, `{
 		"EFORMS": {
@@ -431,7 +564,19 @@ func TestSearch_AdvancedFiltersPostFetch(t *testing.T) {
 			"idweb":       "a",
 			"objet":       "GED un",
 			"nomacheteur": "Acheteur A",
-			"donnees":     `{"OBJET":{"CPV":{"PRINCIPAL":"72000000"}},"ORGANISME":{"ACHETEUR":{"IDENTIFICATION":{"SIREN":"111111111"}}}}`,
+			"donnees": `{
+				"FNSimple": {
+					"organisme": {
+						"typeIdentificationNational": {"siret": ""},
+						"codeIdentificationNational": "11111111100011"
+					},
+					"initial": {
+						"natureMarche": {
+							"codeCPV": {"objetPrincipal": {"classPrincipale": "72000000"}}
+						}
+					}
+				}
+			}`,
 		},
 		{
 			"idweb":       "b",
@@ -444,6 +589,46 @@ func TestSearch_AdvancedFiltersPostFetch(t *testing.T) {
 			"objet":       "GED deux",
 			"nomacheteur": "Acheteur A",
 			"donnees":     `{"OBJET":{"CPV":{"PRINCIPAL":"72500000"}},"ORGANISME":{"ACHETEUR":{"IDENTIFICATION":{"SIREN":"111111111"}}}}`,
+		},
+		{
+			"idweb":       "d",
+			"objet":       "GED eForms",
+			"nomacheteur": "Acheteur A",
+			"donnees": `{
+				"EFORMS": {
+					"ContractNotice": {
+						"ext:UBLExtensions": {
+							"ext:UBLExtension": {
+								"ext:ExtensionContent": {
+									"efext:EformsExtension": {
+										"efac:Organizations": {
+											"efac:Organization": {
+												"efac:Company": {
+													"cac:PartyIdentification": {"cbc:ID": "ORG-0001"},
+													"cac:PartyLegalEntity": {"cbc:CompanyID": "11111111100011"}
+												}
+											}
+										}
+									}
+								}
+							}
+						},
+						"cac:ContractingParty": {
+							"cac:Party": {
+								"cac:PartyIdentification": {"cbc:ID": "ORG-0001"}
+							}
+						},
+						"cac:ProcurementProject": {
+							"cac:MainCommodityClassification": {
+								"cbc:ItemClassificationCode": {
+									"@listName": "cpv",
+									"#text": "72200000"
+								}
+							}
+						}
+					}
+				}
+			}`,
 		},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -463,16 +648,16 @@ func TestSearch_AdvancedFiltersPostFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
-	// Only "a" and "c" match CPV 72* and buyer SIREN 111111111.
-	if len(got.Items) != 2 {
-		t.Fatalf("got %d tenders, want 2: %+v", len(got.Items), got.Items)
+	// FNSimple "a", legacy "c" and eForms "d" match both filters.
+	if len(got.Items) != 3 {
+		t.Fatalf("got %d tenders, want 3: %+v", len(got.Items), got.Items)
 	}
 	ids := map[string]bool{}
 	for _, x := range got.Items {
 		ids[x.Sources[0].ID] = true
 	}
-	if !ids["a"] || !ids["c"] {
-		t.Errorf("ids = %v, want {a, c}", ids)
+	if !ids["a"] || !ids["c"] || !ids["d"] {
+		t.Errorf("ids = %v, want {a, c, d}", ids)
 	}
 }
 
